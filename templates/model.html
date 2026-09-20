@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}Model / MLOps - Smart Feedback System{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h1>Model / MLOps</h1>
+    <p class="muted">
+        Every model version the pipeline has produced, and how the quality
+        gate judged it.
+    </p>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Quality gate rules                                                    -->
+<!-- -------------------------------------------------------------------- -->
+<section class="card gate-card">
+    <h2>Quality Gate Rules</h2>
+    <p class="muted">A candidate must satisfy both conditions to be deployed.</p>
+    <div class="gate-rules">
+        <div class="gate-rule">
+            <span class="gate-tag">A</span>
+            <div>
+                <strong>Absolute floor</strong>
+                <div class="muted">
+                    accuracy &ge; <span id="min_accuracy">{{ '%.2f' | format(min_accuracy) }}</span>
+                </div>
+            </div>
+        </div>
+        <div class="gate-rule">
+            <span class="gate-tag">B</span>
+            <div>
+                <strong>No regression</strong>
+                <div class="muted">
+                    accuracy &ge; production accuracy &minus;
+                    <span id="accuracy_tolerance">{{ '%.2f' | format(tolerance) }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <p class="muted note">
+        Both the candidate and the production model are scored on the same
+        frozen holdout set, so the comparison is valid.
+    </p>
+</section>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Production model                                                      -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Production Model</h2>
+{% if production %}
+<section class="card">
+    <div class="model-head">
+        <div>
+            <span class="model-version" id="production_version">v{{ production.version }}</span>
+            <span class="pill pill-production" id="production_status">{{ production.status }}</span>
+        </div>
+        <div class="muted" id="production_created">{{ production.created_at }}</div>
+    </div>
+
+    <div class="metric-grid">
+        <div class="metric">
+            <div class="metric-label">Accuracy</div>
+            <div class="metric-value" id="production_accuracy">{{ '%.4f' | format(production.accuracy) }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Precision</div>
+            <div class="metric-value" id="production_precision">{{ '%.4f' | format(production.precision) }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Recall</div>
+            <div class="metric-value" id="production_recall">{{ '%.4f' | format(production.recall) }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">F1-score</div>
+            <div class="metric-value" id="production_f1">{{ '%.4f' | format(production.f1_score) }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Training samples</div>
+            <div class="metric-value" id="production_samples">{{ production.training_samples }}</div>
+        </div>
+        <div class="metric">
+            <div class="metric-label">Loaded</div>
+            <div class="metric-value" id="production_loaded">
+                {% if stats.model_loaded %}yes{% else %}no{% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="model-notes" id="production_notes">{{ production.notes }}</div>
+    <div class="model-path muted">{{ production.model_path }}</div>
+</section>
+{% else %}
+<section class="card">
+    <p class="muted empty-state" id="no_production_model">
+        No production model yet. Run <code>python train.py</code> to create v1.
+    </p>
+</section>
+{% endif %}
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Previous version                                                      -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Previous Version</h2>
+<section class="card">
+    {% if previous %}
+    <div class="inline-model" id="previous_model">
+        <span class="model-version" id="previous_version">v{{ previous.version }}</span>
+        <span class="pill">{{ previous.status }}</span>
+        <span class="muted">accuracy {{ '%.4f' | format(previous.accuracy) }}</span>
+        <span class="muted">{{ previous.created_at }}</span>
+    </div>
+    {% else %}
+    <p class="muted empty-state" id="no_previous_model">
+        No previous version. The first model is still in production.
+    </p>
+    {% endif %}
+</section>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Rejected candidates                                                   -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Rejected Candidates</h2>
+<section class="card">
+    {% if rejected %}
+    <p class="muted">
+        These models were trained but blocked by the quality gate. They were
+        never deployed.
+    </p>
+    <table class="table" id="rejected_table">
+        <thead>
+            <tr>
+                <th>Version</th><th>Accuracy</th><th>F1</th>
+                <th>Samples</th><th>Created</th><th>Reason</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rejected %}
+            <tr>
+                <td>v{{ row.version }}</td>
+                <td class="bad">{{ '%.4f' | format(row.accuracy) }}</td>
+                <td>{{ '%.4f' | format(row.f1_score) }}</td>
+                <td>{{ row.training_samples }}</td>
+                <td>{{ row.created_at }}</td>
+                <td class="cell-text">{{ row.notes }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted empty-state" id="no_rejected_models">
+        No candidate has been rejected yet.
+    </p>
+    {% endif %}
+</section>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Full history                                                          -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Full Version History</h2>
+<section class="card">
+    {% if history %}
+    <table class="table" id="model_history_table">
+        <thead>
+            <tr>
+                <th>Version</th><th>Status</th><th>Accuracy</th><th>Precision</th>
+                <th>Recall</th><th>F1</th><th>Samples</th><th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in history %}
+            <tr class="row-{{ row.status }}">
+                <td><strong>v{{ row.version }}</strong></td>
+                <td><span class="pill pill-{{ row.status }}">{{ row.status }}</span></td>
+                <td>{{ '%.4f' | format(row.accuracy) }}</td>
+                <td>{{ '%.4f' | format(row.precision) }}</td>
+                <td>{{ '%.4f' | format(row.recall) }}</td>
+                <td>{{ '%.4f' | format(row.f1_score) }}</td>
+                <td>{{ row.training_samples }}</td>
+                <td>{{ row.created_at }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted empty-state" id="no_model_history">No models trained yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

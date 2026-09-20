@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Trained model artifacts.
+# Models are NOT source code. They live in the persistent store
+# (C:\mlops-data\models) and are staged into models/ only at Docker build
+# time, so they must never be committed.
+models/*.pkl
+
+# The SQLite database is runtime state, never source code.
+database/
+*.db
+*.sqlite3
+
+# Scratch space used to pass the candidate model between Jenkins stages.
+build/
+
+# Selenium evidence
+selenium_tests/screenshots/*.png
+
+# Secrets - never commit credentials of any kind
+.env
+*.key
+secrets.*
+
+# Editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

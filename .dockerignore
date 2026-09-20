@@ -1,0 +1,68 @@
+# Files excluded from the Docker build context.
+#
+# Keeping the context small makes builds faster, but the important job here
+# is correctness: nothing that represents RUNTIME STATE may be baked into the
+# image. State belongs in the mounted volume, not in the artifact.
+
+# --- Version control -------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+
+# --- Python bytecode and caches --------------------------------------------
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+
+# --- Virtual environments --------------------------------------------------
+venv
+env
+.venv
+
+# --- Runtime state: MUST NOT be baked into the image -----------------------
+# The SQLite database is runtime state. If a copy were baked in, a rebuilt
+# container could start from a stale database and silently lose feedback, or
+# ship one developer's data to everyone.
+database
+database/*.db
+*.db
+*.sqlite3
+
+# --- Pipeline scratch space ------------------------------------------------
+# build/ holds the candidate model between Jenkins stages. A candidate has
+# NOT passed the quality gate, so it must never reach a deployable image.
+build
+
+# --- Test evidence ---------------------------------------------------------
+selenium_tests/screenshots
+selenium_tests/screenshots/*.png
+
+# --- Editor and OS noise ---------------------------------------------------
+.vscode
+.idea
+Thumbs.db
+desktop.ini
+*.swp
+
+# --- Documentation ---------------------------------------------------------
+docs
+*.md
+
+# ---------------------------------------------------------------------------
+# DELIBERATELY *NOT* EXCLUDED
+# ---------------------------------------------------------------------------
+#
+#   models/*.pkl    The staged production model. Jenkins copies it here from
+#                   the persistent store immediately before the build, and
+#                   baking it in is the entire point of the deployment
+#                   approach from the ML deployment practical: the image is a
+#                   self-contained artifact holding both the code and the
+#                   exact model it serves.
+#
+#   data/*.csv      The training pool and the frozen holdout set. Small, and
+#                   they keep the image able to retrain or re-evaluate.
+#
+#   tests/          Small, and lets the suite be run inside the container to
+#                   confirm the built image is sound.

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Smart Feedback System{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div class="wrap header-inner">
+            <div class="brand">
+                <span class="brand-mark">SF</span>
+                <div>
+                    <div class="brand-name">Smart Feedback System</div>
+                    <div class="brand-sub">Auto-Retraining MLOps Pipeline</div>
+                </div>
+            </div>
+            <nav class="nav">
+                <a id="nav_home" href="{{ url_for('index') }}"
+                   class="{% if request.path == '/' %}active{% endif %}">Feedback</a>
+                <a id="nav_dashboard" href="{{ url_for('dashboard') }}"
+                   class="{% if request.path == '/dashboard' %}active{% endif %}">Dashboard</a>
+                <a id="nav_model" href="{{ url_for('model_page') }}"
+                   class="{% if request.path == '/model' %}active{% endif %}">Model / MLOps</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="wrap">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="wrap">
+            <span id="footer_model_state">
+                {% if stats and stats.model_loaded %}
+                    Production model v{{ stats.model_version }} loaded
+                {% else %}
+                    No production model loaded
+                {% endif %}
+            </span>
+            <span class="sep">|</span>
+            <span>Mini Project &mdash; DevOps / CI-CD / MLOps</span>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

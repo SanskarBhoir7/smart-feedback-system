@@ -1,0 +1,361 @@
+feedback_text,rating
+"the app is terrible and crashes every time I open it",1
+"terrible service, nobody answered my calls",1
+"a terrible experience from beginning to end",1
+"the delivery was terrible and arrived very late",1
+"terrible quality, the product broke immediately",1
+"the website is terribly slow and badly designed",1
+"terrible support, they never replied to me",1
+"the interface is terrible and confusing to use",2
+"very slow service and the staff were unhelpful",2
+"the app is painfully slow on my phone",2
+"slow loading and constant errors on every page",1
+"the checkout is slow and often fails",2
+"extremely slow support, I waited three days",1
+"the website is slow and the search never works",2
+"slow delivery and poor packaging",2
+"everything is slow since the last update",2
+"the response time is slow and frustrating",2
+"slow, buggy and completely unreliable",1
+"bad quality and a very bad price",1
+"the service was bad and the staff were rude",1
+"badly designed and badly documented",2
+"a bad experience, I would not recommend it",1
+"the app behaves badly on older phones",2
+"bad support, they simply ignored my complaint",1
+"the product quality is bad for the price",2
+"poor service and poor communication throughout",1
+"poor quality materials, it broke in a week",1
+"poor support, nobody seems to care",1
+"the app has poor performance and crashes often",2
+"poor value for money, very disappointing",1
+"poor documentation, nothing is explained",2
+"a poor experience with rude and unhelpful staff",1
+"poor design makes the website hard to use",2
+"poor delivery, the item arrived damaged",1
+"awful service, I am very disappointed",1
+"the quality is awful and the price is high",1
+"an awful experience, the app never works",1
+"awful support, they were rude on the phone",1
+"the interface is awful and very slow",1
+"awful, nothing about this works properly",1
+"the worst service I have ever received",1
+"the worst app I have used this year",1
+"the worst quality for the worst price",1
+"worst support team, completely unhelpful",1
+"this is the worst experience imaginable",1
+"the app is broken and nobody will fix it",1
+"the checkout page is broken again",1
+"broken features and no support at all",1
+"the search is broken and returns nothing",2
+"the login is broken since the update",2
+"everything feels broken and unfinished",1
+"the app crashes constantly on my device",1
+"it crashed three times while I was ordering",1
+"the website crashed and I lost my data",1
+"crashes every time I try to upload a file",2
+"the app crashed and deleted my account",1
+"it crashes whenever the network is slow",2
+"constant crashes make it useless",1
+"very disappointing quality and slow delivery",2
+"disappointing service, nothing worked as promised",1
+"I am disappointed with the poor support",1
+"disappointed, the app is slow and buggy",2
+"a disappointing product at a high price",2
+"very disappointed with the rude staff",1
+"disappointing performance, it crashes often",2
+"frustrating to use and very slow",2
+"a frustrating experience with bad support",1
+"frustrating design, nothing is where I expect",2
+"very frustrating, the app fails constantly",1
+"frustrating delays and poor communication",2
+"the whole process is frustrating and slow",2
+"useless app, it never does what I need",1
+"useless support, they could not help at all",1
+"the search feature is useless",2
+"a useless product, complete waste of money",1
+"useless documentation, badly written",2
+"the staff were rude and completely unhelpful",1
+"rude service and a bad attitude",1
+"the support team was rude on every call",1
+"rude staff made a bad experience worse",1
+"unhelpful support and slow responses",2
+"the staff were unhelpful and poorly trained",1
+"unhelpful answers to every question I asked",2
+"an unhelpful service with no real solutions",2
+"far too expensive for such poor quality",2
+"expensive and it does not even work",1
+"very expensive with bad support",2
+"the price is expensive and the service is slow",2
+"expensive, slow and disappointing",1
+"buggy software that crashes constantly",1
+"the app is buggy and badly tested",2
+"buggy and slow, a poor experience",2
+"too buggy to use for real work",1
+"the payment failed three times today",1
+"it fails every time I submit the form",2
+"the upload fails and shows no error",2
+"the app failed during checkout again",1
+"everything fails when the server is slow",2
+"my order failed and nobody could explain why",1
+"the delivery was late and badly packaged",2
+"very late delivery with no updates",2
+"the item arrived late and damaged",1
+"late responses and unhelpful answers",2
+"the service is always late and slow",2
+"a complete waste of money and time",1
+"waste of money, the quality is poor",1
+"what a waste, it never worked once",1
+"a waste of time dealing with rude support",1
+"horrible quality and horrible service",1
+"a horrible experience, everything was slow",1
+"horrible design and a confusing interface",1
+"horrible support, they never called back",1
+"the item never arrived and support never replied",1
+"it never works when I actually need it",1
+"they never fixed the problem I reported",1
+"the notifications never arrive on time",2
+"it does not work on my laptop at all",1
+"the feature does not work as advertised",2
+"nothing works properly since the update",1
+"the app does not work and support is unhelpful",1
+"it is okay but nothing special",3
+"okay service, neither good nor bad",3
+"the app is okay for basic tasks",3
+"okay quality for the price",3
+"an okay experience, nothing memorable",3
+"the support was okay but slow",3
+"okay design although the layout is dated",3
+"it is okay once you get used to it",3
+"the delivery was okay but the packaging was poor",3
+"okay performance, could be faster",3
+"an average product at an average price",3
+"average service with average support",3
+"the app is average, nothing stands out",3
+"average quality, it does the job",3
+"an average experience overall",3
+"average speed and average reliability",3
+"the website is average but usable",3
+"average documentation, could be clearer",3
+"the staff were average, polite but slow",3
+"an average design with average features",3
+"it is fine for everyday use",3
+"fine service, nothing to complain about",3
+"the app is fine but the website is weak",3
+"fine quality although a little expensive",3
+"fine, but I expected a bit more",3
+"the support was fine but took a while",3
+"it works fine most of the time",3
+"fine performance on a modern phone",3
+"the interface is fine but plain",3
+"delivery was fine, nothing unusual",3
+"a decent product with a few rough edges",3
+"decent service but slow responses",3
+"the app is decent for the price",3
+"decent quality, could be better",3
+"a decent experience with minor issues",3
+"decent design but the search is weak",3
+"the support team was decent and polite",3
+"decent features, average performance",3
+"acceptable quality for a low price",3
+"the service was acceptable but slow",3
+"acceptable performance with occasional errors",3
+"an acceptable product, nothing more",3
+"acceptable support, eventually helpful",3
+"the delivery time was acceptable",3
+"acceptable design although it feels dated",3
+"an ordinary app with ordinary features",3
+"ordinary service, neither fast nor slow",3
+"an ordinary experience, quite forgettable",3
+"ordinary quality at an ordinary price",3
+"adequate support, slow but polite",3
+"adequate quality for basic needs",3
+"the app is adequate but not impressive",3
+"adequate performance, nothing more",3
+"an adequate service with minor problems",3
+"passable quality, I have seen better",3
+"the app is passable for simple tasks",3
+"a passable design with weak search",3
+"passable support, slow but correct",3
+"it is alright but could be improved",3
+"alright service, nothing special",3
+"the quality is alright for the price",3
+"alright performance on most devices",3
+"neither good nor bad, just average",3
+"I neither like nor dislike the app",3
+"neither fast nor slow, simply ordinary",3
+"neither impressed nor disappointed",3
+"standard service with standard quality",3
+"a standard app, nothing new here",3
+"standard delivery time and packaging",3
+"standard features, average design",3
+"reasonable quality for a reasonable price",3
+"a reasonable service with slow support",3
+"reasonable performance, could be faster",3
+"the price is reasonable but the app is average",3
+"mixed feelings, some parts are good and some are poor",3
+"a mixed experience, fine app but slow support",3
+"mixed quality across different features",3
+"mixed results, sometimes fast and sometimes slow",3
+"good idea but average execution",3
+"nice design but slow performance",3
+"helpful staff but a very slow process",3
+"fast delivery but poor packaging",3
+"good app but the support is weak",3
+"the quality is good but the price is high",3
+"easy to use but missing key features",3
+"reliable but very plain and dated",3
+"friendly staff but the service was slow",3
+"great features but a confusing interface",3
+"works well on desktop but badly on mobile",3
+"the app is fast but crashes sometimes",3
+"half of the features are useful and half are not",3
+"some parts are excellent and others are poor",3
+"it does most of what I need",3
+"it meets the minimum standard",3
+"no major problems and no real highlights",3
+"nothing to praise and nothing to complain about",3
+"usable but not enjoyable",3
+"functional but rather dull",3
+"serviceable although a little clunky",3
+"tolerable, though I have used better apps",3
+"satisfactory but unremarkable",3
+"moderate quality and moderate speed",3
+"the experience was neutral overall",3
+"middle of the road in every way",3
+"not bad but not good either",3
+"I am undecided about whether to continue",3
+"it has potential but is not there yet",3
+"some improvement since last time but still average",3
+"the app works but feels unfinished",3
+"it is fine when it works, which is usually",3
+"average support, sometimes helpful sometimes not",3
+"the design is plain but the app is functional",3
+"quality varies from day to day",3
+"an unexceptional but working product",3
+"the service is ordinary but dependable",3
+"acceptable overall with room for improvement",3
+"a fair product for a fair price",3
+"it is neither the best nor the worst",3
+"okay app, average support, fine delivery",3
+"reasonable effort but nothing outstanding",3
+"excellent service and very helpful staff",5
+"excellent quality at a great price",5
+"an excellent app, fast and reliable",5
+"excellent support, they fixed it quickly",5
+"excellent design and easy to use",5
+"excellent delivery, arrived the next day",5
+"an excellent experience from start to finish",5
+"excellent performance on every device",4
+"excellent documentation, clear and helpful",4
+"great service with friendly staff",5
+"a great app, fast and easy to use",5
+"great quality and great value for money",5
+"great support team, very helpful",5
+"great design and smooth performance",4
+"a great experience, I would recommend it",5
+"great features and reliable performance",4
+"great delivery, quick and well packaged",5
+"good service and good quality",4
+"a good app with helpful support",4
+"good value for money, I am satisfied",4
+"good design, easy and fast to use",4
+"good quality product, arrived quickly",4
+"good support, friendly and quick",4
+"a good experience overall, very satisfied",4
+"good performance even on an old laptop",4
+"fast service and fast delivery",5
+"the app is fast and reliable",5
+"fast support, they replied within minutes",5
+"fast and easy checkout process",4
+"very fast performance, no delays at all",5
+"fast delivery and excellent packaging",5
+"helpful staff who solved my problem quickly",5
+"very helpful support team, friendly and fast",5
+"helpful documentation and easy setup",4
+"the staff were helpful and polite throughout",5
+"helpful answers to every question I asked",4
+"friendly service and quick responses",5
+"friendly staff and excellent quality",5
+"a friendly and helpful support team",5
+"friendly service with fast delivery",4
+"perfect quality, exactly as described",5
+"the app works perfectly on my phone",5
+"perfect delivery, quick and undamaged",5
+"everything worked perfectly the first time",5
+"a perfect experience with helpful staff",5
+"wonderful service and friendly staff",5
+"a wonderful app, fast and easy",5
+"wonderful support, they were very helpful",5
+"wonderful quality for a good price",5
+"brilliant design and smooth performance",5
+"a brilliant app that just works",5
+"brilliant support, quick and friendly",5
+"brilliant quality and fast delivery",5
+"smooth performance and a clean design",4
+"the app runs smoothly and never crashes",4
+"a smooth and easy setup process",4
+"smooth checkout and fast delivery",4
+"reliable service and reliable quality",4
+"the app is reliable and very fast",5
+"reliable support that always helps",4
+"reliable performance every single day",4
+"very impressed with the quality and speed",5
+"impressed by the helpful support team",5
+"I am impressed with how fast it is",4
+"impressed with the design and features",4
+"I would recommend this to anyone",5
+"highly recommend, excellent quality",5
+"I recommend the app for its speed",4
+"recommended, great service and fast delivery",5
+"very satisfied with the quality",4
+"satisfied with the fast and friendly service",4
+"I am satisfied with both price and quality",4
+"very satisfied, the app works perfectly",5
+"I love the new design, it is very fast",5
+"love this app, easy and reliable",5
+"I love the friendly support team",5
+"love the quality and the quick delivery",5
+"quick delivery and excellent packaging",5
+"quick and helpful responses from support",4
+"a quick and easy ordering process",4
+"quick setup and smooth performance",4
+"easy to use and very reliable",4
+"easy setup, I was ready in minutes",5
+"an easy and pleasant experience",4
+"easy checkout and fast delivery",4
+"the quality is excellent and the price is fair",5
+"fantastic service and great quality",5
+"fantastic app, fast and well designed",5
+"outstanding support, very helpful staff",5
+"outstanding quality and quick delivery",5
+"superb design and excellent performance",5
+"superb service from a friendly team",5
+"the best app I have used, fast and reliable",5
+"the best service, helpful and quick",5
+"the best quality for the best price",5
+"amazing quality and excellent support",5
+"an amazing experience, fast and easy",5
+"exceeded my expectations in every way",5
+"it exceeded my expectations, excellent quality",5
+"everything arrived on time and in perfect condition",5
+"the support team responded within minutes",5
+"they solved my problem on the first call",5
+"the update made everything much faster",4
+"the new features are excellent and useful",4
+"clean interface and reliable performance",4
+"well designed, fast and easy to navigate",4
+"great improvement over the previous version",4
+"the price is fair and the quality is great",4
+"a polished and professional product",5
+"genuinely useful, it saves me a lot of time",5
+"works flawlessly on every device I own",5
+"very good value and excellent build quality",4
+"a pleasure to use, well done to the team",5
+"the documentation is clear and well written",4
+"prompt delivery and courteous service",4
+"an essential app, fast and reliable",5
+"great experience, I will definitely return",5
+"the interface is clean and easy to use",4
+"delighted with the quality and the speed",5
+"excellent all round, fast service and great support",5

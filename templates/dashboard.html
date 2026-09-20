@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Smart Feedback System{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h1>Dashboard</h1>
+    <p class="muted">Collected feedback and the state of the production model.</p>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Feedback statistics                                                   -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Feedback</h2>
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">Total feedback</div>
+        <div class="stat-value" id="total_feedback">{{ stats.total_feedback }}</div>
+    </div>
+    <div class="stat-card stat-positive">
+        <div class="stat-label">Positive</div>
+        <div class="stat-value" id="positive_count">{{ stats.positive_count }}</div>
+    </div>
+    <div class="stat-card stat-neutral">
+        <div class="stat-label">Neutral</div>
+        <div class="stat-value" id="neutral_count">{{ stats.neutral_count }}</div>
+    </div>
+    <div class="stat-card stat-negative">
+        <div class="stat-label">Negative</div>
+        <div class="stat-value" id="negative_count">{{ stats.negative_count }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Average rating</div>
+        <div class="stat-value" id="average_rating">{{ stats.average_rating }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Live prediction accuracy</div>
+        <div class="stat-value" id="live_accuracy">
+            {% if stats.live_accuracy is not none %}{{ '%.2f' | format(stats.live_accuracy) }}{% else %}-{% endif %}
+        </div>
+        <div class="stat-note">
+            {{ stats.predictions_correct }} correct of {{ stats.predictions_scored }}
+        </div>
+    </div>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Retraining status                                                     -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Auto-Retraining</h2>
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">New samples since last training</div>
+        <div class="stat-value" id="pending_samples">{{ stats.new_samples }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Retraining threshold</div>
+        <div class="stat-value" id="retrain_threshold">{{ stats.retrain_threshold }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Retraining status</div>
+        <div class="stat-value small" id="retrain_ready">
+            {% if stats.retrain_ready %}
+            <span class="pill pill-positive">ELIGIBLE</span>
+            {% else %}
+            <span class="pill">WAITING</span>
+            {% endif %}
+        </div>
+        <div class="stat-note">
+            {% if stats.retrain_ready %}
+            Threshold reached
+            {% else %}
+            {{ stats.samples_until_retrain }} more needed
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Production model                                                      -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Production Model</h2>
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">Current version</div>
+        <div class="stat-value" id="model_version">
+            {% if stats.model_version %}v{{ stats.model_version }}{% else %}none{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Accuracy</div>
+        <div class="stat-value" id="model_accuracy">
+            {% if stats.model_accuracy is not none %}{{ '%.4f' | format(stats.model_accuracy) }}{% else %}-{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">F1-score</div>
+        <div class="stat-value" id="model_f1">
+            {% if stats.model_f1 is not none %}{{ '%.4f' | format(stats.model_f1) }}{% else %}-{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Model status</div>
+        <div class="stat-value small" id="model_status">
+            <span class="pill pill-{{ stats.model_status }}">{{ stats.model_status }}</span>
+        </div>
+        <div class="stat-note" id="model_loaded_state">
+            {% if stats.model_loaded %}loaded and serving{% else %}not loaded{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Trained on</div>
+        <div class="stat-value small" id="training_samples">
+            {% if stats.training_samples %}{{ stats.training_samples }} samples{% else %}-{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Last training time</div>
+        <div class="stat-value small" id="last_training_time">
+            {{ stats.last_training_time or '-' }}
+        </div>
+    </div>
+</div>
+
+{% if not stats.model_loaded and stats.error %}
+<div class="alert alert-error" id="model_error">{{ stats.error }}</div>
+{% endif %}
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Recent feedback                                                       -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Recent Feedback</h2>
+<section class="card">
+    {% if recent %}
+    <table class="table" id="recent_feedback_table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>Feedback</th>
+                <th>Rating</th>
+                <th>Predicted</th>
+                <th>Actual</th>
+                <th>Match</th>
+                <th>Used in training</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in recent %}
+            <tr>
+                <td>{{ row.id }}</td>
+                <td>{{ row.name or '-' }}</td>
+                <td class="cell-text">{{ row.feedback_text }}</td>
+                <td>{{ row.rating }}</td>
+                <td>
+                    {% if row.predicted_sentiment %}
+                    <span class="pill pill-{{ row.predicted_sentiment }}">{{ row.predicted_sentiment }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td><span class="pill pill-{{ row.actual_sentiment }}">{{ row.actual_sentiment }}</span></td>
+                <td>
+                    {% if row.prediction_correct is none %}-
+                    {% elif row.prediction_correct %}<span class="tick">yes</span>
+                    {% else %}<span class="cross">no</span>{% endif %}
+                </td>
+                <td>{% if row.used_in_training %}yes{% else %}pending{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="muted empty-state" id="no_feedback">
+        No feedback collected yet. Submit some on the Feedback page.
+    </p>
+    {% endif %}
+</section>
+{% endblock %}

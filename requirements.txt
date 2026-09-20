@@ -1,0 +1,21 @@
+# Pinned deliberately.
+#
+# The model is trained on the host (by Jenkins) and the resulting .pkl is
+# baked into the Docker image. If the scikit-learn version inside the
+# container differed from the one that created the pickle, loading it would
+# raise InconsistentVersionWarning and could fail outright. Pinning keeps the
+# host and the container byte-for-byte compatible.
+#
+# Note: the Docker practical (Experiment 5) specifies Flask==3.0.0. We pin the
+# version actually installed on this machine instead, for the same
+# host/container matching reason.
+
+scikit-learn==1.5.1
+joblib==1.4.2
+numpy==1.26.4
+scipy==1.14.1
+Flask==3.1.3
+
+# Testing
+pytest==8.3.4
+selenium==4.27.1

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Submit Feedback - Smart Feedback System{% endblock %}
+
+{% block content %}
+<div class="page-head">
+    <h1>Submit Feedback</h1>
+    <p class="muted">
+        Your feedback is classified by the current production model, and the
+        star rating you choose becomes its training label.
+    </p>
+</div>
+
+<div class="grid-2">
+    <!-- ---------------------------------------------------------------- -->
+    <!-- Feedback form                                                     -->
+    <!-- ---------------------------------------------------------------- -->
+    <section class="card">
+        <h2>Your feedback</h2>
+
+        {% if error %}
+        <div id="form_error" class="alert alert-error">{{ error }}</div>
+        {% endif %}
+
+        <form id="feedback_form" method="POST" action="{{ url_for('submit_feedback') }}">
+            <label for="name">Name <span class="muted">(optional)</span></label>
+            <input type="text" id="name" name="name" maxlength="60"
+                   placeholder="Your name" value="{{ form.name or '' }}">
+
+            <label for="feedback_text">Feedback <span class="required">*</span></label>
+            <textarea id="feedback_text" name="feedback_text" rows="5"
+                      maxlength="1000"
+                      placeholder="Tell us about your experience...">{{ form.feedback_text or '' }}</textarea>
+            <div class="field-hint">
+                <span id="char_count">0</span> / 1000 characters
+            </div>
+
+            <label for="rating">Rating <span class="required">*</span></label>
+            <select id="rating" name="rating">
+                <option value="">Select a rating</option>
+                <option value="1" {% if form.rating == '1' %}selected{% endif %}>1 - Very poor</option>
+                <option value="2" {% if form.rating == '2' %}selected{% endif %}>2 - Poor</option>
+                <option value="3" {% if form.rating == '3' %}selected{% endif %}>3 - Average</option>
+                <option value="4" {% if form.rating == '4' %}selected{% endif %}>4 - Good</option>
+                <option value="5" {% if form.rating == '5' %}selected{% endif %}>5 - Excellent</option>
+            </select>
+            <div class="field-hint">
+                1-2 becomes <strong>negative</strong>,
+                3 becomes <strong>neutral</strong>,
+                4-5 becomes <strong>positive</strong>.
+            </div>
+
+            <div class="actions">
+                <button type="submit" id="submit_feedback" class="btn btn-primary">
+                    Submit Feedback
+                </button>
+                <button type="button" id="preview_prediction" class="btn btn-secondary">
+                    Preview Prediction
+                </button>
+            </div>
+        </form>
+
+        <!-- Filled in by main.js from POST /predict, without saving anything -->
+        <div id="preview_result" class="preview hidden">
+            <span class="preview-label">Model would predict:</span>
+            <span id="preview_sentiment" class="pill">-</span>
+        </div>
+    </section>
+
+    <!-- ---------------------------------------------------------------- -->
+    <!-- Result of the submission                                          -->
+    <!-- ---------------------------------------------------------------- -->
+    <section class="card">
+        <h2>Result</h2>
+
+        {% if result %}
+        <div id="result" class="result-block">
+            <div class="result-row">
+                <span class="result-label">Submitted feedback</span>
+                <span id="submitted_text" class="result-value">{{ result.feedback_text }}</span>
+            </div>
+            <div class="result-row">
+                <span class="result-label">Rating given</span>
+                <span id="submitted_rating" class="result-value">{{ result.rating }} / 5</span>
+            </div>
+            <div class="result-row">
+                <span class="result-label">Predicted sentiment</span>
+                <span class="result-value">
+                    {% if result.predicted_sentiment %}
+                    <span id="predicted_sentiment"
+                          class="pill pill-{{ result.predicted_sentiment }}">{{ result.predicted_sentiment }}</span>
+                    {% else %}
+                    <span id="predicted_sentiment" class="pill">unavailable</span>
+                    {% endif %}
+                </span>
+            </div>
+            <div class="result-row">
+                <span class="result-label">Actual sentiment <span class="muted">(from rating)</span></span>
+                <span class="result-value">
+                    <span id="actual_sentiment"
+                          class="pill pill-{{ result.actual_sentiment }}">{{ result.actual_sentiment }}</span>
+                </span>
+            </div>
+            <div class="result-row">
+                <span class="result-label">Prediction matched?</span>
+                <span class="result-value">
+                    {% if result.prediction_correct is none %}
+                    <span id="prediction_match" class="pill">not evaluated</span>
+                    {% elif result.prediction_correct %}
+                    <span id="prediction_match" class="pill pill-positive">YES - correct</span>
+                    {% else %}
+                    <span id="prediction_match" class="pill pill-negative">NO - incorrect</span>
+                    {% endif %}
+                </span>
+            </div>
+            {% if result.model_version %}
+            <div class="result-row">
+                <span class="result-label">Predicted by</span>
+                <span id="result_model_version" class="result-value">model v{{ result.model_version }}</span>
+            </div>
+            {% endif %}
+
+            <div class="alert alert-info retrain-note">
+                This submission is now stored as labelled training data.
+                <strong id="pending_after_submit">{{ stats.new_samples }}</strong>
+                of <strong>{{ stats.retrain_threshold }}</strong> samples collected
+                towards the next retraining.
+            </div>
+        </div>
+        {% else %}
+        <p id="no_result" class="muted empty-state">
+            Submit feedback to see the model's prediction, the sentiment derived
+            from your rating, and whether the two agree.
+        </p>
+        {% endif %}
+    </section>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Retraining progress                                                   -->
+<!-- -------------------------------------------------------------------- -->
+<section class="card">
+    <h2>Auto-Retraining Progress</h2>
+    <div class="progress-row">
+        <div class="progress-bar">
+            {% set pct = (stats.new_samples / stats.retrain_threshold * 100) if stats.retrain_threshold else 0 %}
+            <div class="progress-fill" style="width: {{ [pct, 100] | min }}%"></div>
+        </div>
+        <div class="progress-text">
+            <strong id="pending_samples">{{ stats.new_samples }}</strong>
+            / <span id="retrain_threshold">{{ stats.retrain_threshold }}</span> samples
+        </div>
+    </div>
+    <p class="muted">
+        {% if stats.retrain_ready %}
+        <span id="retrain_status">Threshold reached - the next pipeline run will retrain the model.</span>
+        {% else %}
+        <span id="retrain_status">{{ stats.samples_until_retrain }} more sample(s) needed to trigger retraining.</span>
+        {% endif %}
+    </p>
+</section>
+{% endblock %}
