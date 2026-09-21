@@ -791,7 +791,7 @@ project module.
 
 ## 21. Demonstration procedure
 
-### Setup (before the viva)
+### Setup
 
 ```powershell
 python prepare_data.py
