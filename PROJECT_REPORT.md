@@ -33,15 +33,15 @@ The production model trained on the live data (v4) scores **0.9306**. A new
 data-quality layer excluded five contradictory feedback rows from its training
 and catches 46 of 50 deliberately poisoned rows; the quality gate still
 rejects a poisoned candidate (0.7778) when that layer is switched off.
-**221 isolated tests** and **15 deployment integration tests** pass.
+**224 isolated tests** and **15 deployment integration tests** pass.
 
-Jenkins runs the pipeline every five minutes. In both snapshots of its
-retained builds that were inspected, every build that got past Checkout
-succeeded (the only two failures could not resolve github.com just after the
-machine woke), and two earlier builds carried out full retraining cycles. The revised
-pipeline described here has been executed command by command on the
-development machine but has not yet run inside Jenkins, because Jenkins builds
-from GitHub and the revision has not been pushed.
+Jenkins runs the pipeline every five minutes. The revised pipeline's first
+build, #541, ran under SYSTEM and succeeded: 221 tests passed, the retraining
+check found no new feedback, and the conditional stages were skipped. Its
+retraining, Docker, deploy and integration-test stages have therefore not yet
+run inside Jenkins with the hybrid model; they were verified by a Jenkins-like
+replay. Two earlier builds (#3, #75) carried out full retraining cycles with
+the original model.
 
 ---
 
@@ -719,10 +719,30 @@ through small files in `build/`:
 
 | Command | Produces |
 |---|---|
-| `retrain.py --check` | `build/retrain_decision.json` + exit code |
+| `retrain.py --check` | clears the previous run's candidate files; `build/retrain_decision.json` + exit code |
 | `retrain.py --train` | `build/candidate_model.pkl`, `build/candidate_training.json` (what was used and excluded) |
 | `evaluate.py --candidate` | `build/candidate_metrics.json` |
-| `retrain.py --gate` | promotion or rejection + exit code |
+| `retrain.py --gate` | promotion or rejection + exit code; `build/gate_result.json` (decision, model version, accuracies) |
+
+### Artifact traceability
+
+`build/` is gitignored, so in the Jenkins workspace it survives from build to
+build — and the pipeline used to archive `build/*.json` on every build. Build
+#541, which did not retrain, therefore archived and fingerprinted the
+candidate files left by build #75 as if they were its own. Now:
+
+* `--check`, which starts every run, deletes the previous run's candidate
+  files first;
+* every JSON file carries a `provenance` block — Jenkins build tag and
+  number, the commit when Jenkins provides it, and a timestamp — and the gate
+  result names the model version the build produced, while that version's
+  notes name the build;
+* Jenkins archives the decision only once the check has run, and the
+  candidate files and gate result only in a build that retrained.
+
+File names stay fixed, because the stages hand the files to each other by
+name and Jenkins already keeps each build's archive separately; the
+provenance is in the content.
 
 ### Exit-code contract
 
@@ -1006,9 +1026,15 @@ Builds #3 and #75 have rotated out of the retained 20, so their console logs
 are gone; the evidence for them is the database rows and the image
 timestamps.
 
-**Pending:** the revised pipeline (encoder bootstrap, hybrid model, integration
-tests) has not yet run inside Jenkins, which builds from GitHub. Before the
-push it was replayed without Jenkins: stages, `bat` commands, `when`
+**The revised pipeline in Jenkins.** Build #541, the first after the push
+(cron-triggered, SYSTEM), checked out `4731db0` and succeeded in 130 s: pip
+installed nothing, the encoder was already prepared, 221 tests passed, the
+check found 0 new samples, and all seven conditional stages were skipped. The
+retraining, Docker, deploy and integration-test stages have not yet run inside
+Jenkins with the hybrid model; they will on the first build after 10 new
+feedback samples.
+
+Before the push the pipeline was replayed without Jenkins: stages, `bat` commands, `when`
 conditions and exit codes were parsed from the Jenkinsfile and run through
 `cmd.exe` in a fresh clone, with the SYSTEM account's machine PATH, an empty
 profile, no user site-packages, and all non-local network access from Python
@@ -1090,9 +1116,9 @@ after.
 | `tests/test_pages.py` | 24 | passed |
 | `tests/test_validation.py` | 28 | passed |
 | `tests/test_database.py` | 30 | passed |
-| `tests/test_retraining.py` | 24 | passed |
+| `tests/test_retraining.py` | 27 | passed |
 | `tests/test_model_safety.py` | 14 | passed |
-| **Isolated total** | **221** | **passed** (~53 s) |
+| **Isolated total** | **224** | **passed** (~55 s) |
 | `integration_tests/test_deployment.py` vs Docker | 15 | passed |
 
 The negation and unseen-vocabulary tests assert the behaviour that was
@@ -1114,14 +1140,16 @@ All figures below were measured during development. Nothing is estimated.
 | Candidate accepted | **Verified** — v4 over v3 |
 | Candidate rejected | **Verified** — 0.7778, production retained |
 | Data-quality filter | **Verified** — 5 live rows, 46 / 50 poisoned rows |
-| Pytest | **221 passed** |
+| Pytest | **224 passed** |
 | Deployment integration tests | **15 passed** |
 | Docker | **Verified** — 2.14 GB, offline, healthy in 8–14 s |
 | Container persistence | **Verified** |
 | Jenkins below-threshold runs | **Verified in Jenkins** — #307–#326, #513–#532 (2 network failures at Checkout) |
 | Jenkins full cycles | **Verified by evidence** — builds #3, #75 |
 | Revised pipeline, Jenkins-like offline replay | **Verified** — both paths pass |
-| **Revised pipeline in Jenkins** | **Pending push** |
+| Revised pipeline in Jenkins | **Verified** — build #541 (below threshold, 221 tests) |
+| **Retraining, Docker, deploy, integration stages in Jenkins** | **Not yet run** — no new feedback since v4 |
+| Build-artifact traceability | **Verified** by 3 tests and replay; in Jenkins from the next pushed build |
 
 ### The evaluator's five cases, re-tested
 

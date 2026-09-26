@@ -9,10 +9,11 @@ and checked over HTTP by an automated test suite.
 > **Verification status.** Everything in this README has been executed on the
 > development machine. Jenkins runs as a Windows service and its builds are
 > the evidence for the pipeline (see [§18](#18-jenkins-pipeline-explained)).
-> One item is still pending: the pipeline **as revised here** (hybrid model,
-> encoder bootstrap, integration tests) has not yet run *inside Jenkins*,
-> because Jenkins builds from GitHub and the revision has not been pushed.
-> Every command it runs has been executed locally with the same exit codes.
+> The revised pipeline has run in Jenkins (build #541: 221 tests, retraining
+> check, conditional stages skipped). Its retraining, Docker, deploy and
+> integration-test stages have **not yet run inside Jenkins** with the hybrid
+> model, because no new feedback has arrived since v4; they were verified by a
+> Jenkins-like replay.
 
 ---
 
@@ -226,7 +227,7 @@ smart-feedback-system/
 ├── static/css/style.css
 ├── static/js/main.js
 │
-├── tests/                   221 isolated tests (never touch real data)
+├── tests/                   224 isolated tests (never touch real data)
 │   ├── conftest.py
 │   ├── test_model.py
 │   ├── test_semantic_model.py
@@ -639,7 +640,7 @@ python retrain.py --gate
 ```
 
 `--train` prints what went in and what was excluded, and writes it to
-`build/candidate_training.json`, which Jenkins archives:
+`build/candidate_training.json`:
 
 ```
 Pool samples     : 288
@@ -649,6 +650,16 @@ Excluded as inconsistent: 5 row(s) [31, 32, 48, 51, 52]
    label conflict     : 4
 Total training   : 311
 ```
+
+**Build artifacts name their build.** `build/` is gitignored, so in the
+Jenkins workspace it survives from one build to the next. `--check`, which
+starts every run, first deletes the previous run's candidate files. Every
+JSON file in `build/` — `retrain_decision.json`, `candidate_training.json`,
+`candidate_metrics.json` and the gate's `gate_result.json` (decision, model
+version, accuracies) — carries a `provenance` block naming the Jenkins build
+that wrote it, and each model version's notes name that build too. Jenkins
+archives the decision only once the check has run, and the candidate files and
+gate result only in a build that actually retrained.
 
 **Training data grows; the holdout set never does.** New feedback always
 becomes training data, so the yardstick stays fixed and model versions remain
@@ -875,8 +886,18 @@ service for no reason.
 * builds #320–#323 ran **after** the database migration and still passed —
   the old pipeline reads the migrated database without problems.
 
-**Not yet verified inside Jenkins:** the revised pipeline, because Jenkins
-builds from GitHub. Before pushing, it was replayed as closely as possible
+**The revised pipeline in Jenkins.** Build **#541**, the first after the push
+(cron-triggered, running as SYSTEM), checked out `4731db0` and succeeded in
+130 s: *Install Dependencies* installed nothing (46 "Requirement already
+satisfied"), the encoder was already prepared, **221 tests passed**, the check
+found 0 new samples, and all seven conditional stages were skipped. So the
+training, gate, Docker, deploy and integration-test stages have **not yet run
+inside Jenkins** with the hybrid model; they will on the first build after 10
+new feedback samples. Build #541 also exposed an artifact-traceability flaw,
+since fixed (§14): it archived candidate files left in the workspace by build
+#75.
+
+Before the push, the whole pipeline was replayed as closely as possible
 without Jenkins: the stages, `bat` commands, `when` conditions and exit-code
 handling were **parsed from the Jenkinsfile itself** and run through
 `cmd.exe` in a fresh clone, with the SYSTEM account's machine PATH, an empty
@@ -888,10 +909,10 @@ made by Python blocked and logged.
 | Below threshold, live data | 5 stages pass, 7 skipped by `when`; **0** network attempts; live database byte-identical before and after |
 | Retraining path, copy of the live data + 10 new rows | **all 12 stages pass** — exit 10 → 5 inconsistent rows excluded → v5 accepted (0.9306) → model + encoder staged → image built → container healthy serving v5 → 15 / 15 integration tests; **0** non-local network attempts |
 
-The replay caught one real problem, now fixed: `torch==2.13.0+cpu` did not
-match the Windows host's torch (`2.13.0`), so the first Jenkins build would
-have re-downloaded torch (see §5). What a replay cannot show is Jenkins itself
-running as SYSTEM; the first build after the push will.
+The replay caught one real problem, fixed before the push: `torch==2.13.0+cpu`
+did not match the Windows host's torch (`2.13.0`), so the first Jenkins build
+would have re-downloaded torch (see §5). Build #541 confirmed the fix — pip
+installed nothing.
 
 **Windows.** Every step uses `bat`, not `sh`. The practicals show `sh` because
 they assume a Linux agent; this Jenkins runs on Windows, where `sh` fails.
@@ -909,7 +930,7 @@ Experiment 3 uses *Execute Windows batch command* for the same reason.
 python -m pytest -q
 ```
 
-**Result: 221 passed** (about 53 s).
+**Result: 224 passed** (about 55 s).
 
 | Module | Tests | Covers |
 |---|---|---|
@@ -920,7 +941,7 @@ python -m pytest -q
 | `test_pages.py` | 24 | rendered pages: form, navigation, result panel, counter, dashboard, model page, the script the preview button uses |
 | `test_validation.py` | 28 | empty, short, invalid, malformed input |
 | `test_database.py` | 30 | insert, retrieve, versioning, promotion |
-| `test_retraining.py` | 24 | threshold, candidate, gate accept/reject, filter vs poisoned data |
+| `test_retraining.py` | 27 | threshold, candidate, gate accept/reject, filter vs poisoned data, build-artifact clean-up and provenance |
 | `test_model_safety.py` | 14 | holdout isolation, shared test set |
 
 The negation and unseen-wording tests assert what was **measured** — that
@@ -1230,7 +1251,7 @@ Jenkins job `MLOps-LabExp8`, but that is not firm enough to assert a number.
 | Candidate rejected | **Verified** — 0.7778, production retained (filter off) |
 | Data-quality filter | **Verified** — 5 live rows excluded; 46 / 50 poisoned rows caught |
 | Sticky exclusion | **Verified** — recorded on the live database after v4 was accepted |
-| Pytest | **221 passed** |
+| Pytest | **224 passed** |
 | Deployment integration tests vs Docker | **15 passed** |
 | Docker build (encoder baked in, offline) | **Verified** — 2.14 GB, healthy in 8–14 s |
 | Container persistence | **Verified** — database unchanged across redeploys (28 rows) |
@@ -1239,4 +1260,6 @@ Jenkins job `MLOps-LabExp8`, but that is not firm enough to assert a number.
 | Jenkins below-threshold runs | **Verified in Jenkins** — #307–#326 all SUCCESS; #513–#532 18 SUCCESS, 2 Checkout failures (no DNS after wake) |
 | Jenkins full retraining cycle | **Verified by evidence** — v2 / v3 promotions match images v3 / v75 (logs rotated out) |
 | Revised pipeline, Jenkins-like replay | **Verified** — both paths pass offline under SYSTEM-like conditions (§18) |
-| **Revised pipeline inside Jenkins** | **Pending** — runs after the revision is pushed |
+| Revised pipeline inside Jenkins | **Verified** — build #541 under SYSTEM: 221 tests, check, conditional stages skipped |
+| **Retraining, Docker, deploy and integration stages inside Jenkins** | **Not yet run** — no new feedback since v4; verified by replay only |
+| Build-artifact traceability | **Verified** — stale files cleared, provenance in every artifact (3 tests + replay); takes effect in Jenkins from the next pushed build |
