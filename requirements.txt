@@ -14,9 +14,15 @@
 # version actually installed on this machine instead, for the same
 # host/container matching reason.
 
-# CPU-only PyTorch. The default PyPI wheel for Linux bundles CUDA libraries
-# worth several gigabytes that a CPU container never uses. The "+cpu" build
-# comes from PyTorch's own index; everything else still comes from PyPI.
+# CPU-only PyTorch, the same 2.13.0 on both platforms:
+#   Linux (the Docker image)  PyPI's default wheel bundles CUDA libraries
+#                             worth several gigabytes that a CPU container
+#                             never uses, so the "+cpu" build comes from
+#                             PyTorch's own index.
+#   Windows (the Jenkins host) PyPI's wheel is already CPU-only and is
+#                             published as plain "2.13.0". Requiring "+cpu"
+#                             here made pip re-download and reinstall torch.
+# Everything else still comes from PyPI.
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Classic ML and the web application
@@ -27,12 +33,21 @@ scipy==1.14.1
 Flask==3.1.3
 
 # Pretrained sentence encoder (all-MiniLM-L6-v2), run frozen on CPU
-torch==2.13.0+cpu
+torch==2.13.0+cpu; sys_platform == "linux"
+torch==2.13.0; sys_platform != "linux"
 sentence-transformers==5.7.0
 transformers==5.15.0
 tokenizers==0.22.2
 huggingface-hub==1.27.0
 safetensors==0.8.0
+
+# huggingface-hub's HTTP stack, pinned to what a clean install resolves (the
+# Docker image). Jenkins installs into a Python shared with other tools; one
+# of them left h11 0.16 beside an old httpcore 1.0.7 that needs h11<0.15.
+# Without these pins pip "fixes" that by downgrading h11, breaking the other
+# tools; with them it upgrades httpcore instead.
+httpcore==1.0.9
+h11==0.16.0
 
 # Testing
 pytest==8.3.4
