@@ -5,8 +5,10 @@ WHY THIS EXISTS
 ---------------
 `docker run -d` returns as soon as the container is CREATED, not when Flask
 is ready to serve. Without a wait, the Jenkins pipeline would race ahead to
-the Selenium stage and fail against a server that simply had not finished
-starting - an intermittent red build with no real defect behind it.
+the deployment integration tests and fail against a server that simply had
+not finished starting - an intermittent red build with no real defect behind
+it. Startup now also loads the sentence encoder, which makes the wait longer
+and this check more important.
 
 Written in Python rather than curl because Python is already a verified
 dependency of this pipeline, whereas curl's presence on the Jenkins PATH is

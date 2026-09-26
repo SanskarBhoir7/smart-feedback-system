@@ -48,9 +48,10 @@
 //  fail. Experiment 3 uses "Execute Windows batch command" for exactly this
 //  reason.
 //
-//  Jenkins must run as a user who is a member of the local `docker-users`
-//  group. The MSI installer's default LocalSystem account is NOT a member and
-//  cannot reach the Docker named pipe. Run jenkins_env_check.bat first.
+//  The account Jenkins runs as must be able to use python, git and the
+//  Docker named pipe. On the development machine that account is
+//  LocalSystem, and it can. Run jenkins_env_check.bat first to confirm it
+//  on any other machine.
 // ===========================================================================
 
 pipeline {
@@ -64,7 +65,9 @@ pipeline {
 
     options {
         buildDiscarder(logRotator(numToKeepStr: '20'))
-        timeout(time: 30, unit: 'MINUTES')
+        // 45 minutes: the FIRST build downloads CPU PyTorch into the Docker
+        // image. Later builds reuse Docker's cached dependency layer.
+        timeout(time: 45, unit: 'MINUTES')
         disableConcurrentBuilds()   // two pipelines must never retrain at once
     }
 
@@ -107,12 +110,17 @@ pipeline {
         }
 
         // -------------------------------------------------------------------
-        stage('Bootstrap Model') {
+        stage('Bootstrap Encoder and Model') {
             steps {
-                // train.py is idempotent: if a production model already
-                // exists it prints a message and exits 0. So this stage only
-                // does real work on a brand new environment, which is what
-                // makes the pipeline safe to run from a clean machine.
+                // Both steps are idempotent and do nothing when their
+                // artifact already exists, so this stage only does real work
+                // on a brand new machine.
+                //
+                // prepare_encoder.py puts the pinned, frozen sentence encoder
+                // into C:\mlops-data\encoders once. It is the only step that
+                // may need the internet, and only if the encoder is not
+                // already in the local Hugging Face cache.
+                bat 'python prepare_encoder.py'
                 bat 'python train.py'
             }
         }
@@ -200,9 +208,10 @@ pipeline {
             steps {
                 // Copies the newly accepted model from the persistent store
                 // (C:\mlops-data\models) into the workspace models/ folder,
-                // so the Docker build context contains it and the image can
-                // bake it in. This is what keeps the image a self-contained
-                // deployment artifact.
+                // AND the frozen sentence encoder it was trained against
+                // (C:\mlops-data\encoders) into encoders/, so the Docker build
+                // context contains both and the image bakes both in. The
+                // encoder is only re-copied when its fingerprint changes.
                 bat 'python stage_model.py --clean'
             }
         }
@@ -241,27 +250,25 @@ pipeline {
                 // Wait for Flask to actually answer before declaring success.
                 // --require-model also insists the baked model loaded, since
                 // a container serving no model is not a successful deploy.
-                bat 'python healthcheck.py --url %HEALTH_URL% --retries 30 --delay 2 --require-model'
+                // Up to 2 minutes: startup now imports PyTorch and loads the
+                // sentence encoder before the first request is served.
+                bat 'python healthcheck.py --url %HEALTH_URL% --retries 60 --delay 2 --require-model'
             }
         }
 
         // -------------------------------------------------------------------
-        stage('Selenium UI Verification') {
-            when {
-                allOf {
-                    expression { env.RETRAIN_REQUIRED == 'true' }
-                    // The browser tests are added in a later step. Guarding on
-                    // the file keeps this pipeline valid and simply skips the
-                    // stage until they exist, rather than failing on a missing
-                    // directory.
-                    expression { fileExists('selenium_tests/test_feedback_ui.py') }
-                }
-            }
+        stage('Deployment Integration Tests') {
+            when { expression { env.RETRAIN_REQUIRED == 'true' } }
             steps {
-                // Headless, because a Jenkins service cannot open a visible
-                // browser window on Windows (Session 0 isolation).
-                withEnv(["BASE_URL=http://localhost:${env.APP_PORT}", 'HEADLESS=1']) {
-                    bat 'python -m pytest selenium_tests -q'
+                // Real HTTP requests against the container that was just
+                // deployed - not the Flask test client. They confirm the
+                // DEPLOYED artifact works end to end: /health reports the new
+                // model loaded with its encoder, /predict answers, the pages
+                // render, and a submitted feedback row really lands in the
+                // mounted database. Anything the tests submit is removed
+                // again afterwards.
+                withEnv(["BASE_URL=http://localhost:${env.APP_PORT}"]) {
+                    bat 'python -m pytest integration_tests -q'
                 }
             }
         }
@@ -271,11 +278,10 @@ pipeline {
     post {
         always {
             // Keep the evidence from every build: the retraining decision,
-            // the candidate's metrics, and any Selenium screenshots.
+            // the candidate's metrics and its training summary - including
+            // which feedback rows were excluded as inconsistent.
             archiveArtifacts artifacts: 'build/*.json',
                              allowEmptyArchive: true, fingerprint: true
-            archiveArtifacts artifacts: 'selenium_tests/screenshots/*.png',
-                             allowEmptyArchive: true
         }
         success {
             script {
@@ -306,6 +312,10 @@ pipeline {
 ==========================================================
   Check which stage went red:
 
+   Bootstrap      the sentence encoder is missing or damaged.
+                  Run python prepare_encoder.py once with
+                  internet access.
+
    Run Tests      the test suite failed. Nothing was built.
 
    Quality Gate   THIS IS NOT A BUG. The candidate model was
@@ -317,10 +327,14 @@ pipeline {
                   rejected version and the reason.
 
    Build/Deploy   a Docker problem. Confirm Docker Desktop
-                  is running and that the Jenkins account is
-                  in the docker-users group:
+                  is running and that the Jenkins account can
+                  reach the Docker engine:
                       docker ps
                   or run jenkins_env_check.bat.
+
+   Deployment     the new container is up but misbehaves.
+   Integration    The failing test names the endpoint.
+   Tests
 =========================================================='''
         }
     }

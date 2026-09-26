@@ -35,10 +35,6 @@ database/*.db
 # NOT passed the quality gate, so it must never reach a deployable image.
 build
 
-# --- Test evidence ---------------------------------------------------------
-selenium_tests/screenshots
-selenium_tests/screenshots/*.png
-
 # --- Editor and OS noise ---------------------------------------------------
 .vscode
 .idea
@@ -60,6 +56,13 @@ docs
 #                   approach from the ML deployment practical: the image is a
 #                   self-contained artifact holding both the code and the
 #                   exact model it serves.
+#
+#   encoders/       The staged, frozen sentence encoder (91 MB). The baked
+#                   model_vN.pkl holds only the classifier; it needs this
+#                   encoder - byte-identical to the one it was trained
+#                   against - to make any prediction. stage_model.py copies
+#                   it here from the persistent store, so the container never
+#                   downloads anything at prediction time.
 #
 #   data/*.csv      The training pool and the frozen holdout set. Small, and
 #                   they keep the image able to retrain or re-evaluate.

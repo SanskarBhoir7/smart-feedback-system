@@ -1,0 +1,32 @@
+category,text,expected
+negation,good,positive
+negation,not good,negative
+negation,very good,positive
+negation,not very good,negative
+negation,excellent,positive
+negation,not excellent,neutral
+negation,bad,negative
+negation,not bad,neutral
+negation,I liked it,positive
+negation,I did not like it,negative
+negation,the experience was acceptable,neutral
+negation,the experience could be better,neutral
+unseen,the staff were phenomenal,positive
+unseen,an absolutely stellar experience,positive
+unseen,a delightful and seamless purchase,positive
+unseen,I feel cheated,negative
+unseen,I feel robbed,negative
+unseen,the product is garbage,negative
+unseen,this was a nightmare,negative
+unseen,utterly infuriating ordeal,negative
+unseen,it was so-so,neutral
+unseen,"meh, it was fine I guess",neutral
+unseen,It should be lot more better,negative
+low_information,something something,
+low_information,hmm,
+low_information,asdf qwerty,
+low_information,the,
+low_information,it is what it is,
+low_information,blah blah blah,
+low_information,xyz,
+low_information,lorem ipsum dolor,

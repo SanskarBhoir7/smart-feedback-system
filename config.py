@@ -82,6 +82,58 @@ CANDIDATE_METRICS_FILE = os.path.join(BUILD_DIR, "candidate_metrics.json")
 RETRAIN_DECISION_FILE = os.path.join(BUILD_DIR, "retrain_decision.json")
 
 
+# ---------------------------------------------------------------------------
+# 1b. THE PRETRAINED SENTENCE ENCODER
+# ---------------------------------------------------------------------------
+#
+# The model has two parts with very different lifecycles:
+#
+#   * the ENCODER - a pretrained sentence-embedding network (all-MiniLM-L6-v2).
+#     It is FROZEN: never retrained, identical for every model version.
+#   * the CLASSIFIER - the small Logistic Regression that learns from our data.
+#     It is what retraining produces, as model_vN.pkl.
+#
+# The encoder follows exactly the same artifact route as the models:
+#
+#   C:\mlops-data\encoders\<name>\   persistent store (written once by
+#                                     prepare_encoder.py)
+#   <workspace>\encoders\<name>\     staged by stage_model.py before build
+#   /app/encoders/<name>/            baked into the Docker image
+#
+# So the container runs the byte-identical encoder that the classifier was
+# trained against, and nothing is ever downloaded at prediction time.
+
+# The Hugging Face identifier and the exact revision (git commit) pinned.
+ENCODER_NAME = os.environ.get("ENCODER_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+ENCODER_REVISION = os.environ.get("ENCODER_REVISION", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41")
+
+# The folder name the encoder is saved under, e.g. "all-MiniLM-L6-v2".
+ENCODER_DIRNAME = ENCODER_NAME.split("/")[-1]
+
+ENCODER_STORE = os.environ.get("ENCODER_STORE_DIR", os.path.join(DATA_ROOT, "encoders"))
+STAGED_ENCODER_DIR = os.path.join(BASE_DIR, "encoders")
+
+# Same precedence as models: the baked copy first, then the persistent store.
+ENCODER_SEARCH_PATH = [STAGED_ENCODER_DIR, ENCODER_STORE]
+
+# Written beside the encoder files by prepare_encoder.py. Records the name,
+# revision and a SHA-256 of the weights, so a model can prove it is being
+# served with the encoder it was trained against.
+ENCODER_MANIFEST = "encoder_manifest.json"
+
+
+def resolve_encoder_dir():
+    """
+    Find the prepared encoder folder, searching the staged (baked) location
+    first and then the persistent store. Returns None if it is nowhere.
+    """
+    for folder in ENCODER_SEARCH_PATH:
+        candidate = os.path.join(folder, ENCODER_DIRNAME)
+        if os.path.exists(os.path.join(candidate, ENCODER_MANIFEST)):
+            return candidate
+    return None
+
+
 def model_filename(version):
     """Standard file name for a model version, e.g. 3 -> 'model_v3.pkl'."""
     return "model_v{}.pkl".format(version)
@@ -218,6 +270,66 @@ ACCURACY_TOLERANCE = _env_float("ACCURACY_TOLERANCE", 0.02)
 
 
 # ---------------------------------------------------------------------------
+# 4b. PREDICTION CONFIDENCE AND DATA QUALITY
+# ---------------------------------------------------------------------------
+#
+# Both thresholds below were DERIVED FROM VALIDATION DATA, not chosen by hand.
+# calibrate_thresholds.py reproduces them. The source is OUT-OF-FOLD
+# predictions on the 288-row training pool: each row is scored by a model that
+# never saw it. The frozen holdout is deliberately NOT used, because it is
+# reserved for evaluating models and the quality gate.
+
+# LOW-CONFIDENCE ADVISORY FLAG
+#
+# A prediction whose top class probability is below this value is shown with
+# a "low confidence" warning. It is ADVISORY: the prediction is still returned
+# and stored normally, the three sentiment classes are unchanged, and the
+# quality gate is unaffected.
+#
+# Chosen as the 10th percentile of top probability over genuine out-of-fold
+# feedback (0.596, rounded to 0.60). By construction it therefore flags about
+# 10% of normal feedback. Measured behaviour at this value:
+#
+#   * top probability identifies wrong predictions well: AUROC 0.906
+#     (similarity to the nearest training sentence scored only 0.694, so it
+#     was rejected as the signal)
+#   * flags 8 of 8 low-information probes ("something something", "hmm", ...)
+#   * flags 8 of 17 out-of-fold errors
+#   * ALSO flags some genuine but unfamiliar feedback ("I feel cheated").
+#     On this dataset, "no information" and "unfamiliar wording" look the same
+#     to the model. The flag therefore means "limited evidence", not
+#     "meaningless input".
+LOW_CONFIDENCE_THRESHOLD = _env_float("LOW_CONFIDENCE_THRESHOLD", 0.60)
+
+# TEXT / RATING INCONSISTENCY
+#
+# The training label comes from the star rating, not the text. A rating that
+# contradicts its own text ("Good" with 1 star) is a noisy label. Two checks,
+# neither of which uses sentiment keywords (data_quality.py):
+#
+#   1. MODEL DISAGREEMENT - the model predicts the OPPOSITE polarity to the
+#      rating (positive vs negative; neutral never counts) with at least this
+#      confidence.
+#
+#      On clean labels the model made 6 opposite-polarity errors out of 288
+#      out-of-fold predictions, the most confident at 0.861. Set just above
+#      that, so none of those genuine model errors would have been flagged:
+#      a flip this confident is more likely a bad label than a model mistake.
+DISAGREEMENT_CONFIDENCE = _env_float("DISAGREEMENT_CONFIDENCE", 0.87)
+#
+#   2. LABEL CONFLICT - the same text (after normalising case and spacing) has
+#      been submitted with both a positive and a negative rating. The labels
+#      cannot both be right, and nothing in the text says which is, so every
+#      copy is flagged. This check needs no model at all.
+
+# Whether flagged rows are left OUT of retraining. On by default because the
+# evidence showed it is needed: "It was great." with 1 star entered v3's
+# training data as a negative example before this check existed.
+# Set EXCLUDE_INCONSISTENT_FEEDBACK=0 to train on everything.
+EXCLUDE_INCONSISTENT_FEEDBACK = os.environ.get("EXCLUDE_INCONSISTENT_FEEDBACK", "1") == "1"
+
+
+# ---------------------------------------------------------------------------
 # 5. FLASK APPLICATION
 # ---------------------------------------------------------------------------
 
@@ -260,12 +372,17 @@ def describe():
         "  Database             : {}".format(DB_PATH),
         "  Model store (persist): {}".format(MODEL_STORE),
         "  Model staging (build): {}".format(STAGED_MODEL_DIR),
+        "  Encoder              : {} @ {}".format(ENCODER_NAME, ENCODER_REVISION[:10]),
+        "  Encoder store        : {}".format(ENCODER_STORE),
         "  Seed dataset         : {}".format(SEED_CSV),
         "  Retrain threshold    : {} new samples".format(RETRAIN_THRESHOLD),
         "  Min accuracy (gate)  : {}".format(
             "NOT FROZEN YET" if MIN_ACCURACY <= 0 else "{:.4f}".format(MIN_ACCURACY)
         ),
         "  Accuracy tolerance   : {:.4f}".format(ACCURACY_TOLERANCE),
+        "  Low confidence below : {:.2f}".format(LOW_CONFIDENCE_THRESHOLD),
+        "  Disagreement flag at : {:.2f}".format(DISAGREEMENT_CONFIDENCE),
+        "  Exclude inconsistent : {}".format(EXCLUDE_INCONSISTENT_FEEDBACK),
         "----------------------------------------------------------",
     ]
     print("\n".join(lines))

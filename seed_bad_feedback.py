@@ -14,17 +14,41 @@ negative sentences rated 5 stars. That is what bad or malicious feedback
 looks like in the real world, and it degrades the next candidate model
 exactly the way real data poisoning would.
 
+TWO LAYERS OF DEFENCE
+---------------------
+Since the data-quality check (data_quality.py) was added, poisoned rows meet
+two defences in turn:
+
+    layer 1  the data-quality filter leaves out rows whose rating
+             contradicts the text, BEFORE training
+    layer 2  the quality gate rejects a candidate that still scores
+             too low on the frozen holdout
+
 CALIBRATION (measured, not guessed)
 -----------------------------------
-    bad rows     candidate accuracy     gate at 0.85
-        0              0.9167               pass
-       20              0.8750               pass
-       30              0.8611               pass
-       40              0.8194               FAIL
-       50              0.7778               FAIL
+Hybrid model, the live database's 28 genuine rows plus N bad rows, production
+v4 re-scored at 0.9306, so the gate needs max(0.85, 0.9306 - 0.02) = 0.9106:
 
-The default of 50 rows lands around 0.78, comfortably below the 0.85 gate,
-so the demonstration is reliable rather than marginal.
+                  filter OFF (layer 2 only)     filter ON (default)
+    bad rows      accuracy      gate            caught    accuracy   gate
+        0          0.9167       pass              -        0.9306    pass
+       20          0.8333       FAIL            18 / 20    0.9167    pass
+       30          0.8194       FAIL            28 / 30    0.9167    pass
+       40          0.7917       FAIL            37 / 40    0.9167    pass
+       50          0.7778       FAIL            46 / 50    0.9167    pass
+
+(The TF-IDF model measured before this change needed about 40 bad rows to
+fail; the hybrid is more sensitive to poisoned labels.)
+
+So, to SEE THE GATE REJECT, switch the filter off for the demonstration:
+
+    set EXCLUDE_INCONSISTENT_FEEDBACK=0          (cmd)
+    $env:EXCLUDE_INCONSISTENT_FEEDBACK = "0"     (PowerShell)
+
+With the filter on, the rows it catches are excluded and the candidate
+passes - the few it misses are still trained on. That candidate would be
+promoted, so for a demonstration stop after 'retrain.py --train' (which
+prints what was excluded) rather than running the gate.
 
 Every injected row is tagged with source='bad_seed', so --undo can remove
 them all cleanly and leave genuine user feedback untouched.
@@ -122,9 +146,17 @@ def inject(count):
     print("  New samples pending  : {}".format(database.count_new_samples()))
     print("  Retrain threshold    : {}".format(config.RETRAIN_THRESHOLD))
     print("")
-    print("  Run the Jenkins pipeline (or retrain.py) now. The candidate")
-    print("  model should fail the quality gate and production should")
-    print("  remain unchanged.")
+    if config.EXCLUDE_INCONSISTENT_FEEDBACK:
+        print("  The data-quality filter is ON: 'retrain.py --train' should")
+        print("  exclude most of these rows before training. Do not run the")
+        print("  gate for the demonstration - a filtered candidate can pass")
+        print("  and be promoted. To see the gate itself reject a candidate,")
+        print("  set EXCLUDE_INCONSISTENT_FEEDBACK=0 and train again.")
+    else:
+        print("  The data-quality filter is OFF. Run retrain.py (not the")
+        print("  Jenkins pipeline, which uses the default) now: the candidate")
+        print("  should fail the quality gate and production should remain")
+        print("  unchanged.")
     print("")
     print("  Undo with: python seed_bad_feedback.py --undo")
     print("=" * 58)

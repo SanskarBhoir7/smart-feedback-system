@@ -12,11 +12,13 @@ REM
 REM  It is deliberately written as a plain .bat so it behaves identically
 REM  whether it is run by Jenkins, by cmd.exe, or by hand.
 REM
-REM  The most common failure is DOCKER. Jenkins installed via the MSI runs as
-REM  LocalSystem by default, and LocalSystem is NOT a member of the
-REM  'docker-users' group, so `docker ps` fails with a named-pipe permission
-REM  error. The fix is to run the Jenkins service as the logged-in user, NOT
-REM  to loosen Docker's permissions.
+REM  Which Windows account runs Jenkins matters: it decides which PATH,
+REM  which Python and which Docker access the pipeline gets. On this machine
+REM  the Jenkins service runs as LocalSystem and that WORKS - the
+REM  ML-Deployment-Exp9 job ran `docker build` successfully as LocalSystem,
+REM  and this project's Jenkins builds found python and git the same way.
+REM  So do not assume a particular account is broken; run this script and
+REM  let the checks below say what is actually missing.
 REM ===========================================================================
 
 setlocal
@@ -31,13 +33,14 @@ echo   Computer    : %COMPUTERNAME%
 echo.
 
 REM --- 1. python ------------------------------------------------------------
-echo [1/6] python --version
+echo [1/7] python --version
 python --version
 if errorlevel 1 (
     echo       FAILED - python is not on the Jenkins PATH.
-    echo       Note: this project's Python lives under the USER profile
-    echo       ^(AppData\Local\Programs\Python^), which a LocalSystem service
-    echo       does not inherit. Run Jenkins as your own account.
+    echo       A Python installed "for this user only" is on that user's
+    echo       PATH, not necessarily the service account's. Either install
+    echo       Python for all users, or add its folder to the SYSTEM PATH
+    echo       and restart the Jenkins service.
     set /a FAILURES+=1
 ) else (
     echo       OK
@@ -45,7 +48,7 @@ if errorlevel 1 (
 echo.
 
 REM --- 2. git ---------------------------------------------------------------
-echo [2/6] git --version
+echo [2/7] git --version
 git --version
 if errorlevel 1 (
     echo       FAILED - git is not on the Jenkins PATH.
@@ -56,7 +59,7 @@ if errorlevel 1 (
 echo.
 
 REM --- 3. docker ------------------------------------------------------------
-echo [3/6] docker --version
+echo [3/7] docker --version
 docker --version
 if errorlevel 1 (
     echo       FAILED - docker CLI is not on the Jenkins PATH.
@@ -71,11 +74,12 @@ docker ps
 if errorlevel 1 (
     echo       FAILED - the CLI works but the daemon is unreachable.
     echo       Diagnose in this order:
-    echo         a^) Is Docker Desktop actually running?
-    echo         b^) Which account runs Jenkins? LocalSystem cannot reach
-    echo            the Docker named pipe.
-    echo         c^) Is that account in the local 'docker-users' group?
-    echo         d^) Restart the Jenkins service after any group change -
+    echo         a^) Is Docker Desktop actually running? Its engine can
+    echo            stop on its own - `docker desktop start` restarts it.
+    echo         b^) Can the account shown under "Running as" open the
+    echo            Docker named pipe? Administrators and SYSTEM normally
+    echo            can; any other account must be in 'docker-users'.
+    echo         c^) Restart the Jenkins service after any group change -
     echo            group membership is only read at logon.
     set /a FAILURES+=1
 ) else (
@@ -84,7 +88,7 @@ if errorlevel 1 (
 echo.
 
 REM --- 4. persistent data directory ----------------------------------------
-echo [4/6] access C:\mlops-data
+echo [4/7] access C:\mlops-data
 if exist "C:\mlops-data" (
     dir /b "C:\mlops-data"
     echo       directory listing OK
@@ -105,8 +109,21 @@ if errorlevel 1 (
 )
 echo.
 
-REM --- 5. the retraining check (exit-code contract) -------------------------
-echo [5/6] python retrain.py --check
+REM --- 5. the sentence encoder ----------------------------------------------
+echo [5/7] python prepare_encoder.py --verify
+python prepare_encoder.py --verify
+if errorlevel 1 (
+    echo       FAILED - the sentence encoder is missing or damaged in
+    echo       C:\mlops-data\encoders. Run `python prepare_encoder.py` once
+    echo       with internet access; after that no step needs the network.
+    set /a FAILURES+=1
+) else (
+    echo       OK
+)
+echo.
+
+REM --- 6. the retraining check (exit-code contract) -------------------------
+echo [6/7] python retrain.py --check
 python retrain.py --check
 set RC=%ERRORLEVEL%
 echo       exit code = %RC%
@@ -118,8 +135,8 @@ if not "%RC%"=="0" if not "%RC%"=="10" (
 )
 echo.
 
-REM --- 6. tests and model staging ------------------------------------------
-echo [6/6] pytest -q
+REM --- 7. tests and model staging ------------------------------------------
+echo [7/7] pytest -q
 python -m pytest -q
 if errorlevel 1 (
     echo       FAILED - the test suite did not pass.
@@ -129,10 +146,10 @@ if errorlevel 1 (
 )
 echo.
 
-echo [6b ] python stage_model.py --clean
+echo [7b ] python stage_model.py --clean
 python stage_model.py --clean
 if errorlevel 1 (
-    echo       FAILED - could not stage the production model for Docker.
+    echo       FAILED - could not stage the production model and encoder for Docker.
     set /a FAILURES+=1
 ) else (
     echo       OK

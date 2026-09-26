@@ -30,8 +30,7 @@ import re
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import FeatureUnion, Pipeline
 
 import config
 import database
@@ -94,44 +93,100 @@ def load_holdout_rows():
     return _load_csv_rows(config.HOLDOUT_CSV, "Holdout set")
 
 
-def load_feedback_rows():
+def load_feedback_records():
     """
-    Read every piece of feedback collected through the web application.
+    Every piece of feedback collected through the web application, as dicts
+    with id, feedback_text and actual_sentiment, text cleaned.
 
     This is the part that makes the project a feedback-driven MLOps system:
     ordinary user submissions become labelled training data automatically.
     """
-    rows = []
-    for text, label in database.get_training_rows():
-        text = clean_text(text)
+    records = []
+    for record in database.get_feedback_records():
+        text = clean_text(record["feedback_text"])
         if text:
-            rows.append((text, label))
-    return rows
+            records.append(dict(record, feedback_text=text))
+    return records
 
 
-def load_training_data(include_feedback=True):
+def load_feedback_rows():
+    """All collected feedback as (text, label) pairs, unfiltered."""
+    return [(r["feedback_text"], r["actual_sentiment"]) for r in load_feedback_records()]
+
+
+def load_training_data(include_feedback=True, judge_model=None,
+                       exclude_inconsistent=None):
     """
     Build the data a model will LEARN from: the committed training pool plus
-    every piece of feedback collected through the web application.
+    the feedback collected through the web application.
 
-    Returns (texts, labels, summary). The summary is printed in the logs so
-    it is always obvious what a given model version was trained on.
+    Feedback whose rating contradicts its own text is a wrong training label.
+    When exclude_inconsistent is on (config.EXCLUDE_INCONSISTENT_FEEDBACK by
+    default), data_quality.py identifies those rows and they are left out.
+    judge_model is the model that reads each text for that check - normally
+    the current production model. Without one, only the model-free
+    label-conflict check runs.
+
+    Returns (texts, labels, summary). The summary records exactly what went
+    in and what was excluded and why, so every model version is auditable.
 
     The holdout set is deliberately absent - nothing here ever touches it.
     """
-    pool_rows = load_train_pool_rows()
-    feedback_rows = load_feedback_rows() if include_feedback else []
+    import data_quality
 
+    if exclude_inconsistent is None:
+        exclude_inconsistent = config.EXCLUDE_INCONSISTENT_FEEDBACK
+
+    pool_rows = load_train_pool_rows()
+    records = load_feedback_records() if include_feedback else []
+
+    flags = data_quality.assess(records, judge_model) if records else {}
+    excluded_ids = set(flags) if exclude_inconsistent else set()
+    kept = [r for r in records if r["id"] not in excluded_ids]
+
+    feedback_rows = [(r["feedback_text"], r["actual_sentiment"]) for r in kept]
     combined = pool_rows + feedback_rows
-    texts = [row[0] for row in combined]
-    labels = [row[1] for row in combined]
 
     summary = {
         "pool_samples": len(pool_rows),
         "feedback_samples": len(feedback_rows),
         "total_samples": len(combined),
+        "feedback_collected": len(records),
+        "feedback_excluded": len(excluded_ids),
+        "excluded_ids": sorted(excluded_ids),
+        # Per-row reasons, so an accepted run can record its decisions.
+        # String keys, because this summary is written to JSON.
+        "excluded_reasons": {str(i): flags[i] for i in sorted(excluded_ids)},
+        "previously_excluded": sum(1 for r in records if r.get("quality_flag")),
+        "quality_flags": data_quality.summarise(flags),
+        "exclude_inconsistent": exclude_inconsistent,
+        "judged_by_model": judge_model is not None,
     }
-    return texts, labels, summary
+    return [row[0] for row in combined], [row[1] for row in combined], summary
+
+
+def print_training_summary(summary, indent="      "):
+    """Log what a model is being trained on, including any exclusions."""
+    print("{}Pool samples     : {}".format(indent, summary["pool_samples"]))
+    print("{}Feedback samples : {} used of {} collected".format(
+        indent, summary["feedback_samples"], summary.get("feedback_collected", 0)))
+    flags = summary.get("quality_flags", {})
+    if summary.get("feedback_excluded"):
+        print("{}Excluded as inconsistent: {} row(s) {}".format(
+            indent, summary["feedback_excluded"], summary["excluded_ids"]))
+        print("{}   model disagreement : {}".format(indent, flags.get("model_disagreement", 0)))
+        print("{}   label conflict     : {}".format(indent, flags.get("label_conflict", 0)))
+        if summary.get("previously_excluded"):
+            print("{}   of which recorded by an earlier accepted run: {}".format(
+                indent, summary["previously_excluded"]))
+    elif flags.get("flagged_rows"):
+        print("{}Flagged as inconsistent but KEPT: {} (exclusion is switched off)".format(
+            indent, flags["flagged_rows"]))
+    else:
+        print("{}Inconsistent rows : none found".format(indent))
+    if not summary.get("judged_by_model", True):
+        print("{}(no production model yet, so only the label-conflict check ran)".format(indent))
+    print("{}Total training   : {}".format(indent, summary["total_samples"]))
 
 
 def load_holdout_data():
@@ -148,51 +203,102 @@ def load_holdout_data():
 # THE MODEL
 # ---------------------------------------------------------------------------
 
-def build_pipeline():
+def build_tfidf():
     """
-    TF-IDF features followed by Logistic Regression.
+    The lexical half: TF-IDF over single words.
 
-    Wrapping both steps in one sklearn Pipeline means joblib saves the
-    vectorizer and the classifier together as a SINGLE .pkl artifact. That
-    matches how the practicals treat model.pkl, and removes any chance of the
-    saved vocabulary getting out of step with the saved model.
-
-    The settings below were CHOSEN BY EXPERIMENT, not by assumption. Eight
-    combinations were compared with 5-fold cross-validation on the TRAINING
-    set only (never the test set, which would inflate the reported score):
+    Settings chosen by 5-fold cross-validation on the training set only:
 
         unigram  min_df=2  C=5     0.9202   <-- chosen
         unigram  min_df=1  C=1     0.9168
         1-2gram  min_df=1  C=10    0.9063
         1-2gram  min_df=2  C=10    0.8924
-        1-2gram  min_df=1  C=1     0.8855
 
-    Word pairs ("not bad") were expected to help, but they measurably hurt at
-    this dataset size: bigrams trigger far more features than 288 training
-    samples can support, so the model overfits. Single words won.
-
-    min_df=2 discards words that appear only once in the whole corpus. Those
-    words cannot generalise to unseen feedback, so dropping them reduces
-    noise.
-
-    class_weight='balanced' keeps the three classes weighted equally even if
-    real feedback arrives lopsided (in practice most users rate 4-5).
+    Word pairs ("not bad") were expected to help but measurably hurt: at this
+    dataset size they create far more features than the data supports.
+    min_df=2 drops words seen only once, which cannot generalise anyway.
     """
+    return TfidfVectorizer(
+        ngram_range=(1, 1),
+        min_df=2,
+        sublinear_tf=True,
+        strip_accents="unicode",
+        lowercase=True,
+    )
+
+
+def build_pipeline():
+    """
+    The production model: lexical AND semantic features, one classifier.
+
+        text --+--> TF-IDF (which words appear)            -> sparse vector --+
+               |                                                              +--> Logistic
+               +--> MiniLM sentence embedding (frozen,    -> 384 numbers    --+    Regression
+                    pretrained semantic representation)
+
+    WHY BOTH, NOT JUST EMBEDDINGS
+    Measured on the identical frozen 72-row holdout, each candidate selected
+    by 5-fold cross-validation on the training pool only:
+
+                               CV acc   holdout acc   negation   unseen-wording
+        TF-IDF only            0.9202     0.9167        6/12        6/11
+        embeddings only        0.9304     0.8472        8/12        8/11
+        TF-IDF + embeddings    0.9411     0.9583        8/12        9/11   <-- chosen
+
+    Embeddings alone generalise better to unfamiliar wording but LOST 7
+    points on the holdout and would be rejected by our own quality gate.
+    TF-IDF alone matches words exactly but has nothing to say about a word it
+    never saw. Side by side, TF-IDF keeps precision on familiar wording and
+    the embeddings add reach to unfamiliar wording.
+
+    WHAT IT DOES NOT FIX
+    Sentence embeddings represent negation only weakly: "not good" moves from
+    POSITIVE (TF-IDF) to NEUTRAL, but not to negative. It also reads bare
+    single words ("Good") less confidently than TF-IDF did.
+
+    ARTIFACT
+    joblib saves the whole pipeline as ONE small model_vN.pkl: the TF-IDF
+    vocabulary, the classifier weights, and the encoder's fingerprint - but
+    NOT the 91 MB encoder weights, which live once in the encoder artifact
+    folder (see embeddings.py).
+
+    C=5 was chosen by the same cross-validation. class_weight='balanced'
+    keeps the three classes weighted equally when real feedback arrives
+    lopsided.
+    """
+    from embeddings import SentenceEmbedder
+
     return Pipeline([
-        ("tfidf", TfidfVectorizer(
-            ngram_range=(1, 1),      # single words only - see note above
-            min_df=2,                # ignore words that appear only once
-            sublinear_tf=True,
-            strip_accents="unicode",
-            lowercase=True,
-        )),
+        ("features", FeatureUnion([
+            ("tfidf", build_tfidf()),
+            ("embedding", SentenceEmbedder()),
+        ])),
         ("classifier", LogisticRegression(
-            max_iter=1000,
+            max_iter=3000,
             class_weight="balanced",
-            C=5.0,                   # milder regularisation, chosen by CV
+            C=5.0,
             random_state=config.RANDOM_STATE,
         )),
     ])
+
+
+def describe_model(model):
+    """
+    A one-line description of a fitted model's features, for training logs.
+
+    Works for the current hybrid and for older TF-IDF-only versions, so the
+    history of archived models can still be inspected.
+    """
+    steps = model.named_steps
+    if "features" in steps:
+        parts = dict(steps["features"].transformer_list)
+        vocabulary = len(parts["tfidf"].vocabulary_)
+        dimension = getattr(parts["embedding"], "dimension_", "?")
+        return "hybrid: {} TF-IDF terms + {}-dim sentence embedding".format(
+            vocabulary, dimension)
+    if "tfidf" in steps:
+        return "TF-IDF only: {} terms".format(len(steps["tfidf"].vocabulary_))
+    return "unknown model layout"
 
 
 if __name__ == "__main__":

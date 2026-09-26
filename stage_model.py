@@ -31,12 +31,14 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
 
 import config
 import database
+import embeddings
 
 
 def clean_staging_dir():
@@ -93,9 +95,61 @@ def stage(clean=False):
     print("  Source (persistent)  : {}".format(source))
     print("  Staged to (workspace): {}".format(destination))
     print("  Size                 : {:.1f} KB".format(size_kb))
+
+    encoder_status = stage_encoder()
+    if encoder_status != 0:
+        return encoder_status
+
     print("")
-    print("  The Docker image will bake in model v{}.".format(record["version"]))
+    print("  The Docker image will bake in model v{} and its encoder.".format(
+        record["version"]))
     print("=" * 58)
+    return 0
+
+
+def _manifest(folder):
+    path = os.path.join(folder, config.ENCODER_MANIFEST)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def stage_encoder():
+    """
+    Copy the frozen sentence encoder into the workspace for the Docker build.
+
+    It follows exactly the same route as the model: persistent store ->
+    workspace -> image. The copy is skipped when the staged encoder already
+    has the same fingerprint, so the 91 MB is not re-copied on every build.
+    """
+    source = os.path.join(config.ENCODER_STORE, config.ENCODER_DIRNAME)
+    destination = os.path.join(config.STAGED_ENCODER_DIR, config.ENCODER_DIRNAME)
+
+    wanted = _manifest(source)
+    if wanted is None:
+        print("  ERROR: the sentence encoder is not prepared at {}".format(source))
+        print("  Run 'python prepare_encoder.py' first.")
+        return 1
+
+    staged = _manifest(destination)
+    if staged and staged.get("weights_sha256") == wanted["weights_sha256"]:
+        print("  Encoder              : already staged ({}...)".format(
+            wanted["weights_sha256"][:12]))
+        return 0
+
+    if os.path.exists(destination):
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+
+    copied = embeddings.sha256_of(os.path.join(destination, wanted["weights_file"]))
+    if copied != wanted["weights_sha256"]:
+        print("  ERROR: the staged encoder does not match its manifest.")
+        return 1
+
+    print("  Encoder staged to    : {}".format(destination))
+    print("  Encoder size         : {:.1f} MB ({}...)".format(
+        wanted["total_bytes"] / 1e6, wanted["weights_sha256"][:12]))
     return 0
 
 

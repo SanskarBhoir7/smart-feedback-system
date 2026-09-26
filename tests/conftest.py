@@ -21,9 +21,12 @@ environment were not already redirected, importing it would create the real
 database. The environment variables are therefore set at the very top of this
 module, before the project imports below them.
 
-Read-only inputs (the seed CSV, the training pool and the frozen holdout set)
-deliberately keep pointing at the real committed files. Tests need the genuine
-holdout set to verify it is never trained on, and nothing writes to them.
+Read-only inputs (the seed CSV, the training pool, the frozen holdout set and
+the prepared sentence encoder) deliberately keep pointing at the real files.
+Tests need the genuine holdout set to verify it is never trained on, and the
+genuine encoder to train and score real models. Nothing writes to them: the
+encoder's staging folder, the one place encoder files are ever copied TO, is
+redirected into the temporary directory like everything else.
 """
 
 import os
@@ -36,6 +39,13 @@ import tempfile
 # ---------------------------------------------------------------------------
 
 TEST_ROOT = tempfile.mkdtemp(prefix="sfs_tests_")
+
+# The prepared encoder is read from the REAL persistent store. That location
+# is worked out here, before MLOPS_DATA_DIR is redirected below, using the
+# same rule as config._default_data_root().
+_REAL_DATA_ROOT = os.environ.get("MLOPS_DATA_DIR") or (
+    r"C:\mlops-data" if sys.platform == "win32" else "/data")
+os.environ.setdefault("ENCODER_STORE_DIR", os.path.join(_REAL_DATA_ROOT, "encoders"))
 
 os.environ["MLOPS_DATA_DIR"] = TEST_ROOT
 os.environ["FEEDBACK_DB_PATH"] = os.path.join(TEST_ROOT, "test_feedback.db")
@@ -58,6 +68,13 @@ config.MODEL_SEARCH_PATH = [config.STAGED_MODEL_DIR, config.MODEL_STORE]
 config.CANDIDATE_MODEL_FILE = os.path.join(config.BUILD_DIR, "candidate_model.pkl")
 config.CANDIDATE_METRICS_FILE = os.path.join(config.BUILD_DIR, "candidate_metrics.json")
 config.RETRAIN_DECISION_FILE = os.path.join(config.BUILD_DIR, "retrain_decision.json")
+
+# The encoder is READ from its real locations - the workspace copy baked into
+# a Docker image, then the persistent store - but anything that would stage a
+# copy writes into the temporary directory instead.
+_REAL_STAGED_ENCODER_DIR = config.STAGED_ENCODER_DIR
+config.STAGED_ENCODER_DIR = os.path.join(TEST_ROOT, "staged_encoders")
+config.ENCODER_SEARCH_PATH = [_REAL_STAGED_ENCODER_DIR, config.ENCODER_STORE]
 config.ensure_directories()
 
 import database                                  # noqa: E402
@@ -87,12 +104,20 @@ def pytest_configure(config):
     for label, path in (("database", project_config.DB_PATH),
                         ("model store", project_config.MODEL_STORE),
                         ("build dir", project_config.BUILD_DIR),
-                        ("staging dir", project_config.STAGED_MODEL_DIR)):
+                        ("staging dir", project_config.STAGED_MODEL_DIR),
+                        ("encoder staging dir", project_config.STAGED_ENCODER_DIR)):
         if not os.path.abspath(path).startswith(os.path.abspath(TEST_ROOT)):
             raise RuntimeError(
                 "Test isolation failed: {} points at {}, which is outside the "
                 "temporary directory {}. Refusing to run.".format(
                     label, path, TEST_ROOT))
+
+    # The encoder is a read-only input and must already be prepared.
+    if project_config.resolve_encoder_dir() is None:
+        raise RuntimeError(
+            "The sentence encoder is not prepared (looked in {}). "
+            "Run 'python prepare_encoder.py' once, then re-run the tests.".format(
+                project_config.ENCODER_SEARCH_PATH))
 
 
 def pytest_unconfigure(config):

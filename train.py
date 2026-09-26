@@ -31,6 +31,7 @@ import config
 import database
 import dataset
 import evaluate
+import model_loader
 
 
 def save_model(model, version):
@@ -63,10 +64,12 @@ def train(force=False, detailed=False):
 
     # ---- 1. Load the training pool ---------------------------------------
     print("\n[1/6] Loading training data...")
-    X_train, y_train, summary = dataset.load_training_data()
-    print("      Pool samples     : {}".format(summary["pool_samples"]))
-    print("      Feedback samples : {}".format(summary["feedback_samples"]))
-    print("      Total training   : {}".format(summary["total_samples"]))
+    # The current production model, if any, reads each feedback text to spot
+    # ratings that contradict it. On a first-ever run there is none, and only
+    # the model-free label-conflict check applies.
+    judge = model_loader.get_model()[0] if existing else None
+    X_train, y_train, summary = dataset.load_training_data(judge_model=judge)
+    dataset.print_training_summary(summary)
 
     # ---- 2. Load the fixed holdout set ------------------------------------
     print("\n[2/6] Loading the fixed holdout set...")
@@ -74,11 +77,10 @@ def train(force=False, detailed=False):
     print("      Holdout samples  : {} (frozen, never trained on)".format(len(X_test)))
 
     # ---- 3. Train --------------------------------------------------------
-    print("\n[3/6] Training TF-IDF + Logistic Regression pipeline...")
+    print("\n[3/6] Training hybrid model (TF-IDF + sentence embeddings -> Logistic Regression)...")
     model = dataset.build_pipeline()
     model.fit(X_train, y_train)
-    vocabulary_size = len(model.named_steps["tfidf"].vocabulary_)
-    print("      Vocabulary size  : {} features".format(vocabulary_size))
+    print("      Features         : {}".format(dataset.describe_model(model)))
 
     # ---- 4. Evaluate -----------------------------------------------------
     print("\n[4/6] Evaluating on the fixed holdout set...")
@@ -111,6 +113,12 @@ def train(force=False, detailed=False):
     consumed = database.mark_all_samples_used()
     if consumed:
         print("      Marked {} feedback samples as used in training".format(consumed))
+
+    # Record why any row was excluded, so that decision sticks (as retrain.py).
+    recorded = database.set_quality_flags(
+        {int(i): r for i, r in summary.get("excluded_reasons", {}).items()})
+    if recorded:
+        print("      Recorded {} exclusion(s) for future training runs".format(recorded))
 
     print("\n" + "-" * 58)
     print(" MODEL v{} IS NOW THE PRODUCTION MODEL".format(version))

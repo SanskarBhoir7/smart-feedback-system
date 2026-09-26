@@ -59,6 +59,7 @@ import config
 import database
 import dataset
 import evaluate
+import model_loader
 
 
 # Exit codes - see the contract in the module docstring.
@@ -167,27 +168,33 @@ def train_candidate(force=False):
 
     banner("TRAIN CANDIDATE MODEL")
 
-    # Training data = committed pool + every piece of collected feedback.
-    X_train, y_train, summary = dataset.load_training_data()
-    print("  Pool samples         : {}".format(summary["pool_samples"]))
-    print("  Feedback samples     : {}".format(summary["feedback_samples"]))
-    print("  Total training data  : {}".format(summary["total_samples"]))
+    # Training data = committed pool + collected feedback, MINUS feedback
+    # whose rating contradicts its own text. The current production model
+    # reads each text for that check (data_quality.py); the label-conflict
+    # check needs no model and always runs.
+    judge = model_loader.get_model()[0]
+    X_train, y_train, summary = dataset.load_training_data(judge_model=judge)
+    dataset.print_training_summary(summary, indent="  ")
     print("  New since last train : {}".format(new_samples))
 
     model = dataset.build_pipeline()
     model.fit(X_train, y_train)
-    print("  Vocabulary size      : {} features".format(
-        len(model.named_steps["tfidf"].vocabulary_)))
+    print("  Features             : {}".format(dataset.describe_model(model)))
 
     os.makedirs(config.BUILD_DIR, exist_ok=True)
     joblib.dump(model, config.CANDIDATE_MODEL_FILE)
     print("  Candidate saved to   : {}".format(config.CANDIDATE_MODEL_FILE))
 
-    # Record how much data went in, so the gate can store it with the version.
+    # Record exactly what went in - and what was kept out - so the gate can
+    # store it with the version and every model stays auditable.
     write_json(config.CANDIDATE_METRICS_FILE.replace("metrics", "training"), {
         "training_samples": summary["total_samples"],
         "pool_samples": summary["pool_samples"],
         "feedback_samples": summary["feedback_samples"],
+        "feedback_excluded": summary["feedback_excluded"],
+        "excluded_ids": summary["excluded_ids"],
+        "excluded_reasons": summary["excluded_reasons"],
+        "quality_flags": summary["quality_flags"],
         "new_samples": new_samples,
     })
 
@@ -201,6 +208,15 @@ def train_candidate(force=False):
 # ---------------------------------------------------------------------------
 # STAGE 3 - QUALITY GATE
 # ---------------------------------------------------------------------------
+
+def _exclusion_note(training_info):
+    """A short audit note naming any feedback rows kept out of training."""
+    excluded = training_info.get("excluded_ids") or []
+    if not excluded:
+        return ""
+    return "; excluded {} inconsistent feedback row(s): ids {}".format(
+        len(excluded), ", ".join(str(i) for i in excluded))
+
 
 def _load_candidate_metrics():
     """Read the metrics produced by the Evaluate Candidate stage."""
@@ -333,7 +349,8 @@ def quality_gate():
             metrics=candidate_metrics,
             training_samples=training_info.get("training_samples", 0),
             status=config.STATUS_REJECTED,
-            notes="Rejected by quality gate: {}".format(reason_text),
+            notes="Rejected by quality gate: {}{}".format(
+                reason_text, _exclusion_note(training_info)),
         )
 
         print("  Candidate recorded as v{} with status 'rejected'.".format(version))
@@ -360,12 +377,22 @@ def quality_gate():
         metrics=candidate_metrics,
         training_samples=training_info.get("training_samples", 0),
         status=config.STATUS_PRODUCTION,
-        notes="Accepted by quality gate (accuracy {:.4f})".format(candidate_accuracy),
+        notes="Accepted by quality gate (accuracy {:.4f}){}".format(
+            candidate_accuracy, _exclusion_note(training_info)),
     )
     database.promote_to_production(version)
 
     # Only now are the samples consumed. A rejection never eats training data.
+    # Rows excluded as inconsistent are marked too: they were reviewed by an
+    # accepted run and deliberately left out, so they must not keep
+    # re-triggering retraining.
     consumed = database.mark_all_samples_used()
+
+    # Record WHY each excluded row was left out, so the decision sticks. A
+    # later production model that is less certain about a text must not
+    # quietly re-admit a label this run already judged wrong.
+    recorded = database.set_quality_flags(
+        {int(i): reasons for i, reasons in training_info.get("excluded_reasons", {}).items()})
 
     print("  Candidate model accepted.")
     print("  Saved to             : {}".format(accepted_path))
@@ -374,6 +401,9 @@ def quality_gate():
         print("  Previous version     : v{} (now archived)".format(
             production["version"]))
     print("  Feedback consumed    : {} samples marked as used".format(consumed))
+    if recorded:
+        print("  Exclusions recorded  : {} row(s) will stay out of future training".format(
+            recorded))
     print("")
     print("  v{} IS NOW THE PRODUCTION MODEL.".format(version))
     print("=" * 58)

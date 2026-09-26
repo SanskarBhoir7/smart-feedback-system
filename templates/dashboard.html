@@ -126,6 +126,30 @@
 {% endif %}
 
 <!-- -------------------------------------------------------------------- -->
+<!-- Data quality                                                          -->
+<!-- -------------------------------------------------------------------- -->
+<h2 class="section-title">Data Quality</h2>
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="stat-label">Rows flagged inconsistent</div>
+        <div class="stat-value" id="flagged_rows">{{ quality.flagged_rows }}</div>
+        <div class="stat-note">
+            {% if quality.excluded_from_training %}excluded from retraining{% else %}still used for training{% endif %}
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Model disagrees with rating</div>
+        <div class="stat-value" id="flag_disagreement">{{ quality.model_disagreement }}</div>
+        <div class="stat-note">opposite polarity, confidence &ge; {{ '%.2f' | format(quality.disagreement_confidence) }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Same text, opposite ratings</div>
+        <div class="stat-value" id="flag_conflict">{{ quality.label_conflict }}</div>
+        <div class="stat-note">labels cannot both be right</div>
+    </div>
+</div>
+
+<!-- -------------------------------------------------------------------- -->
 <!-- Recent feedback                                                       -->
 <!-- -------------------------------------------------------------------- -->
 <h2 class="section-title">Recent Feedback</h2>
@@ -139,8 +163,10 @@
                 <th>Feedback</th>
                 <th>Rating</th>
                 <th>Predicted</th>
+                <th>Confidence</th>
                 <th>Actual</th>
                 <th>Match</th>
+                <th>Quality</th>
                 <th>Used in training</th>
             </tr>
         </thead>
@@ -156,13 +182,23 @@
                     <span class="pill pill-{{ row.predicted_sentiment }}">{{ row.predicted_sentiment }}</span>
                     {% else %}-{% endif %}
                 </td>
+                <td>
+                    {% if row.prediction_confidence is not none %}
+                    {{ '%.0f' | format(row.prediction_confidence * 100) }}%{% if row.low_confidence %} <span class="pill pill-neutral">low</span>{% endif %}
+                    {% else %}-{% endif %}
+                </td>
                 <td><span class="pill pill-{{ row.actual_sentiment }}">{{ row.actual_sentiment }}</span></td>
                 <td>
                     {% if row.prediction_correct is none %}-
                     {% elif row.prediction_correct %}<span class="tick">yes</span>
                     {% else %}<span class="cross">no</span>{% endif %}
                 </td>
-                <td>{% if row.used_in_training %}yes{% else %}pending{% endif %}</td>
+                <td>
+                    {% if row.id in flags %}
+                    <span class="pill pill-negative" title="{% for r in flags[row.id] %}{{ reason_text[r] }}{% if not loop.last %}; {% endif %}{% endfor %}">flagged</span>
+                    {% else %}<span class="muted">ok</span>{% endif %}
+                </td>
+                <td>{% if row.used_in_training %}{% if row.id in flags and quality.excluded_from_training %}reviewed, excluded{% else %}yes{% endif %}{% else %}pending{% endif %}</td>
             </tr>
             {% endfor %}
         </tbody>

@@ -201,6 +201,14 @@ textarea { resize: vertical; }
     border-color: #c5d8ec;
 }
 
+.alert-warn {
+    background: var(--neutral-bg);
+    color: #6b5316;
+    border-color: #ecd9a2;
+    margin-top: 14px;
+    margin-bottom: 0;
+}
+
 .retrain-note { margin-top: 16px; margin-bottom: 0; }
 
 /* ---------------------------- Pills ----------------------------- */

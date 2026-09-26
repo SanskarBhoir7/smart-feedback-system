@@ -69,6 +69,12 @@ def _load_production_model():
 
     try:
         model = joblib.load(path)
+        # One throwaway prediction, for two reasons. It loads the sentence
+        # encoder now (about 1.5 s) instead of on the first user's request,
+        # and it runs the encoder fingerprint check - so a model paired with
+        # the wrong encoder fails HERE, visibly, rather than serving
+        # predictions computed from mismatched features.
+        model.predict_proba(["model warm-up"])
     except Exception as exception:          # noqa: BLE001 - report, never crash
         return None, version, "Failed to load {}: {}".format(path, exception)
 
@@ -113,24 +119,73 @@ def get_last_error():
     return _last_error
 
 
+def predict_detailed(text):
+    """
+    Predict the sentiment of one piece of feedback, with how sure the model is.
+
+    Returns a dict:
+
+        sentiment        "positive" | "neutral" | "negative", or None
+        model_version    the version that answered, or None
+        confidence       the top class probability, 0-1
+        probabilities    {"negative": p, "neutral": p, "positive": p}
+        low_confidence   True when confidence < config.LOW_CONFIDENCE_THRESHOLD
+
+    low_confidence is ADVISORY. The prediction is still made and returned; the
+    flag only says the model had limited evidence. On this dataset that covers
+    both near-meaningless input ("something something") and genuine but
+    unfamiliar wording ("I feel cheated") - the model cannot tell them apart.
+
+    With no model available every field is None, and feedback is still stored
+    so it can be used for training later.
+    """
+    empty = {"sentiment": None, "model_version": None, "confidence": None,
+             "probabilities": None, "low_confidence": None}
+
+    model, version = get_model()
+    if model is None:
+        return empty
+
+    cleaned = str(text).strip()
+    if not cleaned:
+        return dict(empty, model_version=version)
+
+    row = model.predict_proba([cleaned])[0]
+    classes = [str(c) for c in model.classes_]
+    probabilities = {c: round(float(p), 4) for c, p in zip(classes, row)}
+    sentiment = max(probabilities, key=probabilities.get)
+    confidence = probabilities[sentiment]
+
+    return {
+        "sentiment": sentiment,
+        "model_version": version,
+        "confidence": confidence,
+        "probabilities": probabilities,
+        "low_confidence": confidence < config.LOW_CONFIDENCE_THRESHOLD,
+    }
+
+
 def predict(text):
     """
     Predict the sentiment of a single piece of feedback.
 
-    Returns (sentiment, model_version). If no model is available, returns
-    (None, None) - callers decide how to present that, and feedback is still
-    stored so it can be used for training later.
+    Returns (sentiment, model_version), or (None, None) with no model. Kept
+    as the simple form of predict_detailed().
     """
-    model, version = get_model()
+    result = predict_detailed(text)
+    return result["sentiment"], result["model_version"]
+
+
+def model_family(model):
+    """'hybrid' for TF-IDF + embeddings, 'tfidf' for the original layout."""
     if model is None:
-        return None, None
-
-    cleaned = str(text).strip()
-    if not cleaned:
-        return None, version
-
-    prediction = model.predict([cleaned])[0]
-    return str(prediction), version
+        return None
+    steps = getattr(model, "named_steps", {})
+    if "features" in steps:
+        return "hybrid"
+    if "tfidf" in steps:
+        return "tfidf"
+    return "unknown"
 
 
 def describe():
@@ -139,5 +194,6 @@ def describe():
     return {
         "model_loaded": model is not None,
         "model_version": version,
+        "model_family": model_family(model),
         "error": _last_error,
     }

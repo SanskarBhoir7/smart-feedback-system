@@ -47,7 +47,7 @@ def test_health_works_without_a_model(client):
 # ---------------------------------------------------------------------------
 
 def test_index_page_loads(client_with_model):
-    """The feedback form renders with the fields Selenium will drive."""
+    """The feedback form renders with the fields a user fills in."""
     response = client_with_model.get("/")
     assert response.status_code == 200
 

@@ -11,7 +11,7 @@
    so you can show the API working without polluting the database.
 
    Nothing here is required for the app to function. Submitting the form
-   is a normal HTML POST, so Selenium and a browser with JavaScript
+   is a normal HTML POST, so automated tests and a browser with JavaScript
    disabled both behave identically.
    ------------------------------------------------------------------ */
 
@@ -63,7 +63,12 @@
                 })
                 .then(function (result) {
                     if (result.ok && result.data.prediction) {
-                        previewSentiment.textContent = result.data.prediction;
+                        var label = result.data.prediction;
+                        if (typeof result.data.confidence === "number") {
+                            label += " (" + Math.round(result.data.confidence * 100) + "%"
+                                + (result.data.low_confidence ? ", low confidence" : "") + ")";
+                        }
+                        previewSentiment.textContent = label;
                         previewSentiment.className = "pill pill-" + result.data.prediction;
                     } else {
                         previewSentiment.textContent = result.data.error || "prediction failed";

@@ -250,12 +250,18 @@ def test_rejected_candidate_is_recorded_in_the_history(production_model, monkeyp
     assert "quality gate" in rejected[0]["notes"].lower()
 
 
-def test_poisoned_data_fails_the_gate_for_real(production_model):
+def test_poisoned_data_fails_the_gate_for_real(production_model, monkeypatch):
     """
-    The realistic Scenario C: genuinely corrupt feedback degrades the
-    candidate enough to fail the real 0.85 threshold, with no settings
-    changed.
+    The realistic Scenario C, testing the QUALITY GATE layer on its own:
+    genuinely corrupt feedback degrades the candidate enough to fail the real
+    0.85 threshold.
+
+    The data-quality filter is switched off here on purpose. With it on, it
+    stops this poison before training (see
+    test_data_quality_filter_stops_poisoned_data), so the gate would never
+    see a degraded candidate. Each layer of defence is tested separately.
     """
+    monkeypatch.setattr(config, "EXCLUDE_INCONSISTENT_FEEDBACK", False)
     add_mislabelled_feedback(50)
 
     check_code, _, gate_code = run_full_retrain_cycle()
@@ -269,15 +275,43 @@ def test_poisoned_data_fails_the_gate_for_real(production_model):
     assert database.get_production_model()["version"] == production_model["version"]
 
 
+def test_data_quality_filter_stops_poisoned_data(production_model):
+    """
+    Defence in depth. With the data-quality filter ON (the default), the same
+    Scenario C poison is caught BEFORE training: most mislabelled rows are
+    excluded, so the candidate is trained on clean data and passes the gate.
+
+    Measured on this dataset: 46 of the 50 rows are excluded. The rest slip
+    through because the model itself misreads them - the check can only be
+    as good as the model reading the text.
+    """
+    assert config.EXCLUDE_INCONSISTENT_FEEDBACK is True
+    add_mislabelled_feedback(50)
+
+    check_code, _, gate_code = run_full_retrain_cycle()
+    assert check_code == retrain.EXIT_RETRAIN_REQUIRED
+    assert gate_code == retrain.EXIT_OK
+
+    info = retrain.read_json(config.CANDIDATE_METRICS_FILE.replace("metrics", "training"))
+    assert info["feedback_excluded"] >= 40, "the filter should catch most of the poison"
+    assert info["quality_flags"]["model_disagreement"] >= 40
+
+    # The exclusions are recorded against the accepted version for audit.
+    notes = database.get_production_model()["notes"]
+    assert "excluded" in notes and "inconsistent" in notes
+
+
 def test_regression_check_blocks_a_worse_model(production_model, monkeypatch):
     """
     Condition B: a candidate that is worse than production is rejected even
     when it clears the absolute floor.
 
-    The floor is dropped to zero so only the non-regression rule can fire.
+    The floor is dropped to zero so only the non-regression rule can fire,
+    and the data-quality filter is off so the poison really reaches training.
     """
     monkeypatch.setattr(config, "MIN_ACCURACY", 0.0)
     monkeypatch.setattr(config, "ACCURACY_TOLERANCE", 0.0)
+    monkeypatch.setattr(config, "EXCLUDE_INCONSISTENT_FEEDBACK", False)
 
     add_mislabelled_feedback(50)
     _, _, gate_code = run_full_retrain_cycle()
@@ -319,13 +353,15 @@ def test_two_consecutive_accepted_retrains(production_model):
     assert len(live) == 1
 
 
-def test_recovery_after_a_rejection(production_model):
+def test_recovery_after_a_rejection(production_model, monkeypatch):
     """
     A rejection is not terminal.
 
     After the bad data is removed, the next run trains cleanly and is
-    accepted - this is the Scenario C undo path.
+    accepted - this is the Scenario C undo path. The data-quality filter is
+    off so the first run really is rejected by the gate.
     """
+    monkeypatch.setattr(config, "EXCLUDE_INCONSISTENT_FEEDBACK", False)
     add_mislabelled_feedback(50)
     _, _, gate_code = run_full_retrain_cycle()
     assert gate_code == retrain.EXIT_ERROR

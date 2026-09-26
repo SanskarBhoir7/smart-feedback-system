@@ -12,26 +12,36 @@ allowed to get worse.
 
 Users submit written feedback together with a 1–5 star rating. A sentiment
 model predicts the sentiment of the text, while the rating independently
-supplies the true label — so every submission automatically becomes a
+supplies the training label — so every submission automatically becomes a
 labelled training sample. Once a configurable number of new samples has been
-collected, an automated pipeline trains a candidate model, scores it against
-a permanently frozen holdout set, and subjects it to a two-condition quality
-gate. Only a candidate that clears the gate is versioned, packaged into a
-Docker image and deployed; one that fails is recorded as rejected and the
-existing production model continues to serve.
+collected, an automated pipeline checks the new feedback for ratings that
+contradict their own text, trains a candidate model on the rest, scores it
+against a permanently frozen holdout set, and subjects it to a two-condition
+quality gate. Only a candidate that clears the gate is versioned, packaged into
+a Docker image, deployed, and checked over HTTP by automated tests; one that
+fails is recorded as rejected and the existing production model continues to
+serve.
 
-The system was built with Flask, SQLite, scikit-learn, Docker, Jenkins and
-Selenium. The baseline model achieved **0.9167 accuracy** on a fixed
-72-sample holdout set. Both quality-gate outcomes were verified end to end:
-a genuine improvement was promoted at 0.9306, and a deliberately poisoned
-candidate scoring 0.7778 was rejected with production left untouched.
-**130 unit and integration tests** and **15 Selenium browser tests** pass.
+The system was built with Flask, SQLite, scikit-learn, sentence-transformers,
+Docker, Jenkins and pytest. The original TF-IDF model scored **0.9167** on the
+fixed 72-sample holdout. After an evaluation exposed its dependence on exact
+vocabulary, it was replaced by a **hybrid** of TF-IDF and a small frozen
+sentence encoder. On identical training data it scores **0.9583** (F1 0.9582)
+against 0.9167, and handles more negation and unseen-wording probes (8/12 vs
+6/12, 9/11 vs 6/11), at the cost of a 2.14 GB image and ~12 ms predictions.
+The production model trained on the live data (v4) scores **0.9306**. A new
+data-quality layer excluded five contradictory feedback rows from its training
+and catches 46 of 50 deliberately poisoned rows; the quality gate still
+rejects a poisoned candidate (0.7778) when that layer is switched off.
+**221 isolated tests** and **15 deployment integration tests** pass.
 
-One component is not fully verified: Jenkins could not be started on the
-development machine because of a system-level Java networking fault. The
-pipeline is syntax-validated and its logic was simulated end to end, but an
-actual Jenkins build remains pending. This is stated explicitly rather than
-glossed over — see *Limitations / Pending Verification*.
+Jenkins runs the pipeline every five minutes. In both snapshots of its
+retained builds that were inspected, every build that got past Checkout
+succeeded (the only two failures could not resolve github.com just after the
+machine woke), and two earlier builds carried out full retraining cycles. The revised
+pipeline described here has been executed command by command on the
+development machine but has not yet run inside Jenkins, because Jenkins builds
+from GitHub and the revision has not been pushed.
 
 ---
 
@@ -45,12 +55,16 @@ visibly poor. Retraining by hand is slow, easy to postpone and easy to forget.
 Automating retraining is the obvious answer, and it introduces a worse
 problem. A pipeline that deploys whatever it has just trained will eventually
 replace a good model with a bad one — particularly when the incoming data is
-noisy, unrepresentative, or deliberately poisoned.
+noisy, unrepresentative, or deliberately poisoned. In a feedback system the
+noise is built in: the label comes from the star rating, and nothing stops a
+user rating *"Good"* with one star.
 
-This project therefore addresses two requirements at once:
+This project therefore addresses three requirements at once:
 
-1. retraining must happen automatically, driven by real usage; and
-2. no model may reach production without passing an explicit, measurable
+1. retraining must happen automatically, driven by real usage;
+2. feedback whose rating contradicts its own text must not silently become a
+   wrong training label; and
+3. no model may reach production without passing an explicit, measurable
    quality check against a stable yardstick.
 
 ---
@@ -81,34 +95,39 @@ happened, and the deployment that only occurs when the gate is satisfied.
 
 1. Build a Flask application that collects feedback and converts it into
    labelled training data automatically.
-2. Train and serve a sentiment classifier through a web API.
-3. Trigger retraining automatically once a configurable threshold of new
+2. Train and serve a sentiment classifier through a web API, reporting the
+   confidence of every prediction.
+3. Detect feedback whose rating contradicts its text — without hand-written
+   sentiment rules — and keep it out of training without deleting it.
+4. Trigger retraining automatically once a configurable threshold of new
    samples is reached.
-4. Evaluate every model version on an identical, permanently frozen holdout
+5. Evaluate every model version on an identical, permanently frozen holdout
    set so that versions are genuinely comparable.
-5. Enforce a quality gate capable of **rejecting** a candidate and protecting
+6. Enforce a quality gate capable of **rejecting** a candidate and protecting
    the production model.
-6. Version every model and maintain a complete, auditable history including
-   rejections.
-7. Package the approved model into a Docker image as a self-contained
-   deployment artifact.
-8. Automate the lifecycle in a Jenkins declarative pipeline.
-9. Verify the deployed application through a real browser using Selenium.
+7. Version every model — and the encoder it depends on — and maintain a
+   complete, auditable history including rejections and exclusions.
+8. Package the approved model into a Docker image as a self-contained,
+   offline deployment artifact.
+9. Automate the lifecycle in a Jenkins declarative pipeline that ends by
+   testing the deployed container over HTTP.
 
 ---
 
 ## Scope
 
-**In scope.** Feedback collection; three-class sentiment classification;
-automatic retraining on a sample-count threshold; a two-condition quality
-gate; model versioning with a persistent artifact store; containerised
-deployment with a mounted database; a Jenkins pipeline with conditional
-stages; automated unit, integration and browser testing.
+**In scope.** Feedback collection; three-class sentiment classification with
+a small, frozen, pretrained sentence encoder (`all-MiniLM-L6-v2`, 22.7 M
+parameters, CPU only); text/rating consistency checks; advisory confidence
+flags; automatic retraining on a sample-count threshold; a two-condition
+quality gate; model and encoder versioning with a persistent artifact store;
+containerised deployment with a mounted database; a Jenkins pipeline with
+conditional stages; automated unit, integration and deployment testing.
 
-**Out of scope, deliberately.** Kubernetes, cloud infrastructure, message
-queues, distributed training, large pretrained language models,
-authentication, and multi-node orchestration. The project targets a scale
-that can be run locally and explained completely in a viva.
+**Out of scope, deliberately.** Fine-tuning the encoder, large language
+models, GPUs, Kubernetes, cloud infrastructure, message queues, distributed
+training, authentication, and multi-node orchestration. The project targets a
+scale that can be run locally and explained completely in a viva.
 
 ---
 
@@ -122,10 +141,12 @@ that can be run locally and explained completely in a viva.
 | Frontend | plain CSS + vanilla JS | — | no framework needed |
 | Database | SQLite (`sqlite3`) | stdlib | zero-configuration, file-based |
 | ML | scikit-learn | 1.5.1 | used in the CI/CD practical |
+| Sentence encoder | sentence-transformers (`all-MiniLM-L6-v2`) | 5.7.0 | small, CPU-friendly, widely used |
+| Encoder runtime | PyTorch, CPU-only build | 2.13.0+cpu | the GPU build adds gigabytes this project never uses |
+| Encoder support | transformers / tokenizers / huggingface-hub / safetensors | 5.15.0 / 0.22.2 / 1.27.0 / 0.8.0 | pinned sentence-transformers dependencies |
 | Persistence | joblib | 1.4.2 | the practicals' `model.pkl` approach |
 | Numerics | numpy / scipy | 1.26.4 / 1.14.1 | scikit-learn dependencies |
-| Unit testing | pytest | 8.3.4 | used in the CI/CD practical |
-| Browser testing | Selenium (Python) | 4.27.1 | the Selenium practical |
+| Testing | pytest | 8.3.4 | used in the CI/CD practical |
 | Containers | Docker | 29.6.2 | Docker practicals |
 | CI/CD | Jenkins | 2.568.3 | Jenkins practicals |
 | SCM | Git / GitHub | 2.55.0 | Git practical |
@@ -145,29 +166,32 @@ Full diagrams: **[docs/architecture.md](docs/architecture.md)**
         v                                                          │
    USER submits feedback (text + 1-5 rating)                       │
         │                                                          │
-        ├──> model PREDICTS sentiment ──────┐                      │
-        └──> rating gives the TRUE label ───┤                      │
-                                            v                      │
+        ├──> model PREDICTS sentiment + confidence ─┐              │
+        └──> rating gives the LABEL ────────────────┤              │
+                                                    v              │
                                    LABELLED TRAINING DATA          │
                                             │                      │
                               enough new samples? (>= 10)          │
                                        yes  v                      │
+                 LAYER 1   DATA-QUALITY CHECK: rating contradicts  │
+                           text? -> excluded (kept, not deleted)   │
+                                            v                      │
                                    TRAIN CANDIDATE                 │
                                             v                      │
                          EVALUATE on the FIXED 72-row holdout      │
                                             v                      │
-                                     QUALITY GATE                  │
+                 LAYER 2             QUALITY GATE                  │
                                      /              \              │
                                  FAIL                PASS          │
                                   │                   │            │
                       keep production model   promote to production│
                       block deployment                │            │
                                                       v            │
-                                            bake into Docker image │
+                                   bake model + encoder into image │
                                                       v            │
                                               deploy container ────┘
                                                       v
-                                            Selenium verifies the UI
+                                 integration tests over real HTTP
 ```
 
 ### Layered view
@@ -176,7 +200,9 @@ Full diagrams: **[docs/architecture.md](docs/architecture.md)**
    PRESENTATION   templates/ + static/        3 pages, stable element IDs
    APPLICATION    app.py                      routes, validation, rendering
    SERVICE        model_loader.py             loads the ONE production model
-   DATA           database.py                 all SQL, Flask-free
+                  data_quality.py             text / rating consistency
+   MODEL          dataset.py + embeddings.py  the hybrid pipeline
+   DATA           database.py                 all SQL, Flask-free, migrations
    PIPELINE       train / evaluate / retrain  offline, run by Jenkins
    CONFIG         config.py                   every threshold and path
 ```
@@ -189,9 +215,13 @@ to `train.py` and `retrain.py`, executed by Jenkins. This prevents the running
 service from quietly changing the model serving live users.
 
 **Models are baked into the image; the database is mounted.** The image is an
-immutable artifact containing the exact approved model. The database is
-runtime state and must survive the container being destroyed and recreated —
-which Jenkins does on every deployment.
+immutable artifact containing the exact approved model and encoder. The
+database is runtime state and must survive the container being destroyed and
+recreated — which Jenkins does on every deployment.
+
+**The encoder is an artifact, not a download.** It is fetched once, pinned to a
+revision, fingerprinted, and moved through the same route as the models:
+persistent store → workspace → image. Nothing downloads anything at runtime.
 
 **The `model_versions` table is the single source of truth** for which model
 is live. There is no parallel registry file that could drift out of sync.
@@ -205,19 +235,25 @@ is live. There is no parallel registry file that could drift out of sync.
       │
       ├─ validate text (3-1000 chars) and rating (1-5)   -> 400 on failure
       │
-      ├─ model_loader.predict(text)          -> "positive"
-      ├─ config.rating_to_sentiment(5)       -> "positive"
+      ├─ model_loader.predict_detailed(text)  -> "positive", confidence 0.98
+      ├─ config.rating_to_sentiment(1)        -> "negative"
       │
       ├─ database.insert_feedback(...)
-      │     text, rating, prediction, true label, whether they matched,
-      │     model version, used_in_training = 0
+      │     text, rating, prediction, label, whether they matched,
+      │     confidence, low-confidence flag, model version,
+      │     used_in_training = 0
       │
-      └─ render: predicted / actual / match / version / pending counter
+      ├─ data_quality: opposite polarity at >= 0.87?  same text, opposite rating?
+      │
+      └─ render: predicted / confidence / actual / match / version /
+                 low-confidence note / inconsistency note / pending counter
 ```
 
-The rating is the source of truth. When the model disagrees with it, the
-model is recorded as wrong — which is how the system measures its own live
-accuracy and accumulates the data needed to correct itself.
+The rating is the label. When the model disagrees with it, the model is
+usually the one recorded as wrong — which is how the system measures its own
+live accuracy. But when the model disagrees *strongly and in the opposite
+direction*, the rating is the more likely error, and the row is flagged
+instead of being trusted.
 
 ---
 
@@ -234,6 +270,9 @@ accuracy and accumulates the data needed to correct itself.
 | `predicted_sentiment` | TEXT | what the model said |
 | `actual_sentiment` | TEXT NOT NULL | derived from the rating |
 | `prediction_correct` | INTEGER | 0/1, NULL if no model |
+| `prediction_confidence` | REAL | top class probability |
+| `low_confidence` | INTEGER | 1 if below the low-confidence threshold |
+| `quality_flag` | TEXT | why an accepted run excluded the row, else NULL |
 | `model_version` | INTEGER | which model predicted |
 | `source` | TEXT | `user` / `bad_seed` |
 | `used_in_training` | INTEGER | 0 until a candidate using it is accepted |
@@ -249,10 +288,10 @@ accuracy and accumulates the data needed to correct itself.
 | `accuracy`, `precision`, `recall`, `f1_score` | REAL | macro-averaged |
 | `training_samples` | INTEGER | how much data went in |
 | `status` | TEXT | `production` / `archived` / `rejected` |
-| `notes` | TEXT | the quality gate's reason |
+| `notes` | TEXT | the quality gate's reason, and any exclusions |
 | `created_at` | TEXT | timestamp |
 
-### Two decisions worth defending
+### Three decisions worth defending
 
 **`used_in_training` is a flag, not a derived count.** It makes "new samples
 since last training" an exact `COUNT(*) WHERE used_in_training = 0` rather
@@ -262,6 +301,19 @@ than an inference from a possibly stale number.
 rejects a candidate the samples stay pending, so the next pipeline run retries
 with them. A rejection must never silently consume training data. This is
 asserted by `test_rejection_does_not_consume_the_samples`.
+
+**An exclusion is recorded only when a candidate is ACCEPTED, and then it
+sticks.** The disagreement check depends on the current model. Without a
+record, a later model that happened to be less sure about a text could re-admit
+a label an earlier run had judged wrong — which is exactly what would have
+happened to *"Good"* rated 1 star (v3 read it as positive at 0.92, v4 only at
+0.64). A rejected run records nothing, and a person can clear a flag.
+
+**Migration.** The three new columns are added to an existing database by
+`ALTER TABLE ... ADD COLUMN` when `init_db()` finds them missing. No row is
+rewritten. The live database was backed up before the migration was applied,
+and the old pipeline kept running successfully against the migrated database
+(Jenkins builds #320–#323).
 
 ---
 
@@ -277,7 +329,7 @@ Three-class text classification. The rating is mapped to the label:
 | 3 | neutral |
 | 4–5 | positive |
 
-### Model
+### The original model (v1–v3)
 
 A single scikit-learn `Pipeline`:
 
@@ -293,10 +345,8 @@ the classifier as a **single artifact**, matching the practicals' `model.pkl`
 and removing any risk of the saved vocabulary drifting out of step with the
 model.
 
-### Hyperparameters chosen by experiment, not assumption
-
-Eight configurations were compared using 5-fold cross-validation **on the
-training set only**, never the holdout set:
+Its settings were chosen by 5-fold cross-validation **on the training set
+only**, never the holdout set:
 
 | Configuration | CV accuracy |
 |---|---|
@@ -308,8 +358,146 @@ training set only**, never the holdout set:
 
 Word pairs such as "not bad" were expected to help but measurably hurt:
 bigrams generate far more features than 288 training samples can support, so
-the model overfits. Single words won. `min_df=2` discards words appearing
-only once, which cannot generalise anyway.
+the model overfits.
+
+---
+
+## Model Improvement: Adding a Semantic Representation
+
+### What the evaluation exposed
+
+An evaluation of the deployed TF-IDF model (v3) tested five inputs. The
+results, re-measured for this report:
+
+| Input | Rating | v3 prediction |
+|---|---|---|
+| *"not good"* | 1 | **positive** 0.53 |
+| *"Good"* | 1 | positive 0.92 |
+| *"not good"* | 5 | positive 0.53 |
+| *"the experience could be better."* | 4 | neutral 0.46 |
+| *"something something"* | — | negative 0.38 |
+
+Two separate weaknesses show here. First, **TF-IDF only knows words it has
+seen**: it scores *"not good"* by the weight of *good*, and gives meaningless
+text a confident-looking label because nothing in it carries any weight.
+Second, **the label pipeline trusted every rating** — *"Good"* at 1 star went
+into training as a negative example. The first is a model problem; the second
+is a data problem, addressed separately (see *Data Quality*).
+
+### Options considered
+
+| Option | Decision |
+|---|---|
+| Add hand-written rules for negation words | **Rejected** — keyword rules are brittle, and the brief excluded them |
+| Word bigrams (`"not good"` as a feature) | **Rejected** — already measured to hurt (0.9202 → 0.9063 CV) |
+| Fine-tune a transformer | **Rejected** — 288 rows are far too few, training would take minutes per run and need much more memory |
+| Frozen sentence embeddings + logistic regression | **Measured** |
+| TF-IDF **and** embeddings side by side | **Measured, chosen** |
+
+### Selection, by cross-validation on the training pool only
+
+| Candidate | CV accuracy | Holdout accuracy | Negation | Unseen wording |
+|---|---|---|---|---|
+| TF-IDF only | 0.9202 | 0.9167 | 6 / 12 | 6 / 11 |
+| embeddings only | 0.9304 | 0.8472 | 8 / 12 | 8 / 11 |
+| **TF-IDF + embeddings** | **0.9411** | **0.9583** | **8 / 12** | **9 / 11** |
+
+Embeddings alone looked best on paper for unfamiliar wording but **lost
+7 points on the holdout** — this project's own quality gate would have
+rejected them. The hybrid keeps TF-IDF's precision on familiar wording and
+adds the encoder's reach to unfamiliar wording.
+
+```
+text --+--> TF-IDF (which words appear)            -> sparse vector --+
+       |                                                              +--> LogisticRegression
+       +--> all-MiniLM-L6-v2 sentence embedding    -> 384 numbers    --+    (C=5, balanced)
+            (frozen, pretrained, never fine-tuned)
+```
+
+The encoder maps a sentence to 384 numbers such that sentences used in
+similar contexts get similar vectors. That is a learned statistical
+representation of text, not comprehension: it makes the model less dependent
+on exact words, but it does not *understand* language as a person does, and
+the limitations below show where it fails.
+
+### The challenge set
+
+`data/challenge_set.csv` holds 31 hand-written probes: 12 negation pairs
+(*good / not good, excellent / not excellent, I liked it / I did not like
+it …*), 11 sentences written in vocabulary absent from training (*"the staff
+were phenomenal"*, *"I feel cheated"*), and 8 near-meaningless inputs. Their
+expected labels are a human reading of the text alone. It is **not** the
+holdout: nothing is trained or tuned on it and the gate never uses it. It is
+far too small to be a benchmark; it exists to show *where* the models differ.
+
+### Formal comparison (identical data, identical metrics)
+
+Both trained on the 288-row training pool and scored on the frozen 72-row
+holdout (`python compare_models.py`):
+
+| | TF-IDF + LR (original) | TF-IDF + MiniLM + LR (current) |
+|---|---|---|
+| Representation | 1-gram TF-IDF | 1-gram TF-IDF + 384-dim sentence embedding |
+| Classifier | Logistic Regression | Logistic Regression |
+| Accuracy | 0.9167 | **0.9583** |
+| Precision (macro) | 0.9196 | **0.9630** |
+| Recall (macro) | 0.9167 | **0.9583** |
+| F1 (macro) | 0.9145 | **0.9582** |
+| Negation probes | 6 / 12 | **8 / 12** |
+| Unseen-wording probes | 6 / 11 | **9 / 11** |
+| Challenge set overall (23 labelled) | 12 / 23 | **17 / 23** |
+| Low-information probes flagged | — | 8 / 8 |
+| Training time | **0.011 s** | 0.443 s |
+| Inference time (new sentence) | **0.47 ms** | 12.3 ms |
+| Model artifact (`model_vN.pkl`) | **10,289 B** | 19,921 B |
+| Shared encoder | — | 91.6 MB |
+| Docker image | **645 MB** | 2.14 GB |
+
+On the **live** training data (pool + 23 clean feedback rows, the data v4 was
+trained on) the ordering holds: TF-IDF 0.9028 accuracy / 0.9136 precision /
+0.9028 recall / 0.9001 F1; hybrid 0.9306 / 0.9425 / 0.9306 / 0.9298; negation
+5/12 → 8/12; unseen wording 8/11 → 10/11.
+
+Per class on the formal comparison, the hybrid's remaining errors are all
+neutral sentences read as positive (neutral recall 0.88; negative and
+positive recall 1.00). TF-IDF's were spread across neutral → negative (3),
+neutral → positive (2) and positive → neutral (1).
+
+### Where it improved, and where it did not
+
+Item by item, for the two models of the formal comparison above:
+
+| Probe | TF-IDF | Hybrid | Expected |
+|---|---|---|---|
+| *the staff were phenomenal* | negative ✗ | positive ✓ | positive |
+| *I feel cheated* | neutral ✗ | negative ✓ | negative |
+| *utterly infuriating ordeal* | neutral ✗ | negative ✓ | negative |
+| *I did not like it* | neutral ✗ | negative ✓ | negative |
+| *not bad* | negative ✗ | neutral ✓ | neutral |
+| *not excellent* | positive ✗ | neutral ✓ | neutral |
+| *not good* | neutral ✗ | neutral ✗ | negative |
+| *not very good* | positive ✗ | neutral ✗ | negative |
+| *I liked it* | neutral ✗ | neutral ✗ | positive |
+| *good* | positive ✓ | neutral ✗ | positive |
+| *I feel robbed* | neutral ✗ | neutral ✗ | negative |
+
+The hybrid never moved a negated phrase to the *opposite* polarity — its
+negation errors are all "neutral" — but it did not learn that *not good* is
+negative, and it lost the bare word *good*. No rule was added to correct
+either; they are reported as measured.
+
+### Engineering choices that came with it
+
+* **CPU-only PyTorch** from PyTorch's CPU wheel index, instead of the default
+  build that bundles GPU libraries.
+* **The encoder is never pickled.** `model_vN.pkl` stores the TF-IDF
+  vocabulary, the classifier weights and the encoder's SHA-256 fingerprint.
+  At load time the model checks the encoder it finds and refuses to run with
+  a different one (`EncoderMismatchError`).
+* **An embedding cache** means a sentence is encoded once per process; the
+  retraining and data-quality passes re-read the same texts repeatedly.
+* **The model warms up when it loads**, so the first user request is not the
+  one that pays for loading the encoder.
 
 ---
 
@@ -321,13 +509,12 @@ was written by hand, balanced at 120 rows per class.
 **A first attempt failed and the failure was instructive.** An initial
 180-row dataset produced only **0.5833 accuracy**. Analysis showed the cause:
 370 of 543 unique words appeared exactly once, so test sentences shared
-almost no vocabulary with training sentences. The sentences had been written
-with too much creative variety — real feedback reuses sentiment words
-("slow", "excellent", "poor") constantly. The dataset was rebuilt at 360 rows
-with deliberate vocabulary recurrence, and accuracy rose to **0.9167**.
+almost no vocabulary with training sentences. The dataset was rebuilt at 360
+rows with deliberate vocabulary recurrence, and accuracy rose to **0.9167**.
 
-This is recorded because it is a genuine result: for a small text dataset,
-vocabulary recurrence matters more than sentence count.
+In hindsight this was the first sign of the weakness the evaluation later
+exposed: the TF-IDF model could only succeed if the test vocabulary had
+already been seen. The sentence encoder reduces that dependence.
 
 ---
 
@@ -359,7 +546,10 @@ already used for *training* could later appear in the *test* set and inflate
 the score — textbook test-set contamination.
 
 New user feedback therefore always becomes **training** data. The yardstick
-never moves.
+never moves. The model change did not move it either: the hybrid was chosen
+by cross-validation on the training pool, its thresholds were derived from
+out-of-fold predictions on the training pool, and the challenge set is a
+separate file.
 
 ### How it is enforced
 
@@ -377,9 +567,10 @@ never moves.
 
 `train.py` creates version 1:
 
-1. load the training pool plus any collected feedback
+1. load the training pool plus any collected feedback, minus rows the
+   data-quality check flags
 2. load the fixed holdout set
-3. fit the TF-IDF + Logistic Regression pipeline
+3. fit the hybrid pipeline
 4. evaluate on the holdout
 5. save the artifact to the **persistent store**, `C:\mlops-data\models\`
 6. register the version in the database as `production`
@@ -388,24 +579,20 @@ The script is **idempotent** — if a production model exists it exits 0 without
 doing anything, which makes the Jenkins bootstrap stage safe to run on every
 build.
 
-### Measured baseline (model v1)
+### Live model history
 
-```
-Accuracy   0.9167        Precision  0.9196
-Recall     0.9167        F1-Score   0.9145
-Training samples 288     Holdout 72     Vocabulary 201 features
-```
+| Version | Model | Training rows | Accuracy | Precision | Recall | F1 | How |
+|---|---|---|---|---|---|---|---|
+| v1 | TF-IDF | 288 | 0.9167 | 0.9196 | 0.9167 | 0.9145 | `train.py` baseline |
+| v2 | TF-IDF | 298 | 0.9167 | | | | accepted by the gate, Jenkins build #3 |
+| v3 | TF-IDF | 308 | 0.9167 | | | | accepted by the gate, Jenkins build #75 |
+| **v4** | **hybrid** | 311 | **0.9306** | **0.9425** | **0.9306** | **0.9298** | accepted by the gate; 5 rows excluded |
 
-Per class:
-
-| Class | Precision | Recall | F1 | Support |
-|---|---|---|---|---|
-| negative | 0.89 | 1.00 | 0.94 | 24 |
-| neutral | 0.95 | 0.79 | 0.86 | 24 |
-| positive | 0.92 | 0.96 | 0.94 | 24 |
-
-Neutral is the hardest class, which is expected — it sits between the other
-two and lacks strongly polarised vocabulary.
+v4 was produced by `retrain.py --train --force` (which bypasses only the
+10-sample threshold) and `retrain.py --gate`, which re-scored v3 on the same
+holdout and accepted v4 on accuracy alone. Neutral remains the hardest class:
+v4's neutral recall is 0.79, the five errors all neutral sentences read as
+positive.
 
 ---
 
@@ -415,13 +602,96 @@ two and lacks strongly polarised vocabulary.
 and candidate models are always measured by identical code on identical data.
 
 Averaging is **macro**: each class contributes equally regardless of support.
-This is the honest choice here, because it prevents a model from looking good
-by handling the two easy classes and ignoring neutral. `zero_division=0`
-prevents a crash if a class is never predicted.
+This prevents a model from looking good by handling the two easy classes and
+ignoring neutral. `zero_division=0` prevents a crash if a class is never
+predicted.
 
-`random_state=42` is fixed throughout, so an examiner can re-run training and
-reproduce the figures exactly. `test_training_is_reproducible` and
-`test_evaluation_is_reproducible` assert this.
+`random_state=42` is fixed throughout, and the encoder is deterministic, so an
+examiner can re-run training and reproduce the figures exactly.
+`test_training_is_reproducible` and `test_evaluation_is_reproducible` assert
+this.
+
+---
+
+## Data Quality: Text / Rating Inconsistency
+
+### The problem
+
+The label is the rating. A rating that contradicts its text is a wrong label,
+and the evaluation found such rows in the live data: *"Good"* rated 1 star
+(id 48), and *"not good"* submitted once at 1 star and once at 5 (ids 51, 52).
+
+### Two checks, no keywords
+
+| Check | Flags a row when | Needs a model? |
+|---|---|---|
+| **Model disagreement** | the production model predicts the opposite polarity to the rating with confidence ≥ 0.87 | yes |
+| **Label conflict** | the same normalised text also appears with an opposite-polarity rating | no |
+
+`data_quality.py` contains no sentiment words; a test parses its source and
+fails if one appears. Neutral never counts as a contradiction.
+
+### What happens to a flagged row
+
+It is **kept**, shown on the dashboard with its reason, and — while
+`EXCLUDE_INCONSISTENT_FEEDBACK` is on (the default) — **left out of
+retraining**. An accepted run records the reason in `quality_flag`, so the
+exclusion survives later model changes.
+
+### Measured effect
+
+* **Live data:** five rows excluded before v4 was trained — ids 31, 32, 51, 52
+  (label conflict) and 48 (the then-production v3 read *"Good"* as positive
+  at 0.92). Trained on the same data with those five rows **included**, the
+  hybrid scored 0.9167 instead of 0.9306 — one holdout row, so a small
+  difference, but in the expected direction.
+* **Poisoned data** (50 rows: positive text rated 1, negative text rated 5,
+  on a copy of the live database): 46 caught. The four missed were two texts
+  submitted twice — *"perfect quality, exactly as described"* (read as
+  positive at 0.84, below the threshold) and *"would not recommend, awful
+  quality"* (misread as positive at 0.54).
+
+### Limitation, stated plainly
+
+The disagreement check can only vouch for a rating when the model is sure
+what the text means. v4 reads a bare *"Good"* as positive at only 0.64, so a
+*new* *"Good"* rated 1 star would not be flagged.
+
+---
+
+## Prediction Confidence
+
+Every prediction reports its top class probability. Below 0.60 it is marked
+**low confidence**: shown to the user, stored with the feedback, and
+**advisory only** — the prediction is still returned, and nothing is blocked
+or excluded because of it.
+
+### How both thresholds were derived
+
+`calibrate_thresholds.py` uses **out-of-fold** predictions on the training
+pool (5-fold: each prediction comes from a model that never trained on that
+row). The holdout is untouched.
+
+```
+rows 288 | out-of-fold accuracy 0.9410 | errors 17
+
+LOW CONFIDENCE — how well each signal picks out wrong predictions (AUROC)
+    top class probability         0.906   <- used
+    similarity to training data   0.694
+  10th percentile of top probability: 0.596   (config uses 0.60)
+  errors below it: 8 of 17;  low-information probes flagged: 8 of 8
+
+INCONSISTENCY — opposite-polarity errors on CLEAN labels: 6 of 288
+  their confidences: 0.556 0.600 0.715 0.733 0.754 0.861
+  most confident: 0.861                        (config uses 0.87)
+```
+
+**The trade-off.** At 0.60, about one prediction in ten is flagged and about
+half the model's errors are caught. Catching most errors would mean flagging
+a large share of correct predictions — so the flag stays advisory rather than
+blocking. 0.87 sits just above every opposite-polarity mistake the model made
+on clean labels: a more confident flip is more likely a bad rating than a
+model error. Both are configurable by environment variable.
 
 ---
 
@@ -433,7 +703,8 @@ reproduce the figures exactly. `test_training_is_reproducible` and
   if new_samples < RETRAIN_THRESHOLD (10):
       exit 0   -> pipeline skips training, build and deployment
   else:
-      train candidate on (training pool + ALL feedback)
+      assemble training data: pool + feedback, minus flagged rows
+      train candidate
       evaluate on the FIXED holdout
       apply the quality gate
 ```
@@ -445,7 +716,7 @@ through small files in `build/`:
 | Command | Produces |
 |---|---|
 | `retrain.py --check` | `build/retrain_decision.json` + exit code |
-| `retrain.py --train` | `build/candidate_model.pkl` |
+| `retrain.py --train` | `build/candidate_model.pkl`, `build/candidate_training.json` (what was used and excluded) |
 | `evaluate.py --candidate` | `build/candidate_metrics.json` |
 | `retrain.py --gate` | promotion or rejection + exit code |
 
@@ -478,11 +749,13 @@ A candidate must satisfy **both** conditions:
 
 Condition A alone would permit a slow decline; Condition B prevents a working
 model being silently replaced by a worse one. Both models are re-scored on
-the same frozen holdout before comparison, so the numbers are valid.
+the same frozen holdout before comparison, so the numbers are valid — even
+across model families. The gate was not changed for the new model; it judged
+hybrid v4 against TF-IDF v3 on the same terms as every earlier candidate.
 
 ### How the threshold was chosen
 
-`MIN_ACCURACY = 0.85` was derived from measurement, not invented:
+`MIN_ACCURACY = 0.85` was derived from measurement with the original model:
 
 | Evidence | Value |
 |---|---|
@@ -491,38 +764,57 @@ the same frozen holdout before comparison, so the numbers are valid.
 | Poisoned model, 50 bad rows | 0.7778 — fails clearly |
 | CI/CD practical's own example threshold | 85% |
 
-So the gate does not trip on ordinary variation, but does discriminate
-against a genuinely degraded model.
+### Both outcomes, as measured with the current model
 
-### Both outcomes, as measured
-
-Accepted:
+Accepted (the live promotion of v4):
 
 ```
 Candidate Accuracy   : 0.9306
 Required Accuracy    : 0.8500
-Production Accuracy  : 0.9167
-Condition A  0.9306 >= 0.8500  -> PASS
-Condition B  0.9306 >= 0.8967  -> PASS
+Production Accuracy  : 0.9167   (v3, re-scored on the same holdout)
 QUALITY GATE: PASSED
-New model version    : v2      Previous version : v1 (archived)
+New model version    : v4      Previous version : v3 (archived)
 ```
 
-Rejected:
+Rejected (50 poisoned rows, data-quality filter off, copy of the live
+database):
 
 ```
 Candidate Accuracy   : 0.7778
-Required Accuracy    : 0.8500
-Production Accuracy  : 0.9306
-Condition A  0.7778 >= 0.8500  -> FAIL
-Condition B  0.7778 >= 0.9106  -> FAIL
+Required Accuracy    : 0.8500   (MIN_ACCURACY)
+Production Accuracy  : 0.9306   (v4, re-scored on the same holdout)
 QUALITY GATE: FAILED
-Candidate recorded as v3 with status 'rejected'.
-Production model v2 REMAINS ACTIVE.  Deployment is blocked.
+Reason: accuracy 0.7778 is below the required 0.8500; accuracy 0.7778
+        regresses from production 0.9306
+Candidate recorded as v5 with status 'rejected'.
+Production model v4 REMAINS ACTIVE.
+Deployment is blocked.
 ```
 
 A rejected candidate is still saved and registered, so the Model page can
 **show** the rejection rather than the event disappearing into a log file.
+
+### Two layers against poisoned data
+
+Candidate accuracy with N poisoned rows added to the live data; the gate
+needs max(0.85, 0.9306 − 0.02) = 0.9106:
+
+| Bad rows | TF-IDF, no filter (original) | Hybrid, filter off | Hybrid, filter on (default) |
+|---|---|---|---|
+| 0 | 0.9167 | 0.9167 | 0.9306 |
+| 20 | 0.8750 | 0.8333 **FAIL** | 0.9167 (18 caught) |
+| 30 | 0.8611 | 0.8194 **FAIL** | 0.9167 (28 caught) |
+| 40 | 0.8194 **FAIL** | 0.7917 **FAIL** | 0.9167 (37 caught) |
+| 50 | 0.7778 **FAIL** | 0.7778 **FAIL** | 0.9167 (46 caught) |
+
+(The TF-IDF column was measured earlier against a production model at
+0.9167, so its gate verdicts used the 0.85 floor.)
+
+Two findings. The hybrid is **more sensitive** to poisoned labels than
+TF-IDF was — 20 bad rows already fail the gate. And with the filter on, the
+candidate stays within the gate's tolerance at every level tested: the filter
+removes most of the poison before it can do damage, and the gate remains the
+backstop for what slips through.
 
 ---
 
@@ -530,23 +822,30 @@ A rejected candidate is still saved and registered, so the Model page can
 
 ```
   C:\mlops-data\models\          PERSISTENT authoritative store
-      model_v1.pkl                   every version ever produced,
-      model_v2.pkl                   including rejected candidates
-      model_v3.pkl
+      model_v1.pkl ... v4.pkl        every version ever produced,
+                                     including rejected candidates
+  C:\mlops-data\encoders\
+      all-MiniLM-L6-v2\              the encoder, once, with
+        encoder_manifest.json        name, revision, SHA-256, dimension
 
-  <workspace>\models\            only the LIVE model, copied by
-      model_v2.pkl               stage_model.py before docker build
+  <workspace>\models\            only the LIVE model  } copied by
+  <workspace>\encoders\          the encoder          } stage_model.py
 
-  Docker image                   the one approved model, baked in
+  Docker image                   the approved model + encoder, baked in
 ```
+
+**The encoder is versioned together with the classifier.** Each
+`model_vN.pkl` records the SHA-256 of the encoder weights it was trained
+with; the manifest records the pinned Hugging Face revision
+(`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`) and the same SHA-256. A model
+cannot silently run on a different encoder. Paths are resolved from
+configuration at run time, never taken from the pickle, so the same artifact
+works on Windows and in the Linux container.
 
 Version numbers are sequential and never reused. Exactly one row may hold
 `status = 'production'`, enforced by `promote_to_production()`, which demotes
-the incumbent to `archived` in the same transaction. Rejected versions keep
-their status permanently — a rejection is a historical record, not a former
-production model.
-
-Archived artifacts are retained, so a manual rollback is possible.
+the incumbent to `archived` in the same transaction. Older TF-IDF versions
+still load and can still be evaluated, so a manual rollback remains possible.
 
 ---
 
@@ -556,7 +855,7 @@ Archived artifacts are retained, so a manual rollback is possible.
 |---|---|---|
 | `/` | GET | feedback form |
 | `/feedback` | POST | submit feedback |
-| `/dashboard` | GET | statistics and model status |
+| `/dashboard` | GET | statistics, data quality and model status |
 | `/model` | GET | model versions and metrics |
 | `/predict` | POST | predict without storing (JSON) |
 | `/api/stats` | GET | dashboard data as JSON |
@@ -564,19 +863,23 @@ Archived artifacts are retained, so a manual rollback is possible.
 | `/health` | GET | liveness probe |
 
 `app.py` contains **no SQL and no scikit-learn**. Everything is delegated to
-`database.py` and `model_loader.py`.
+`database.py`, `model_loader.py` and `data_quality.py`.
+
+`/predict` now returns the prediction, the model version, the confidence, the
+low-confidence flag and all three class probabilities. The result page shows
+the confidence and, where they apply, a low-confidence note and an
+inconsistency note that says the row will be left out of retraining. The
+dashboard adds Data Quality counts and per-row confidence and quality columns.
 
 **Validation.** Text must be 3–1000 characters; rating must be an integer
 1–5. Invalid form submissions return 400 with the error displayed and the
 typed text preserved. Invalid API requests return 400 with a JSON error.
-Verified by 28 tests, each asserting both the status code and that nothing
-reached the database.
 
 **Graceful degradation.** `/health` returns **200 even with no model loaded**,
 reporting the model state separately — the service being up and a model being
-deployed are different facts, and the deploy stage needs both. `/predict`
-returns 503. Feedback is still stored, because its value as training data
-does not depend on a model existing.
+deployed are different facts. `/predict` returns 503. Feedback is still
+stored, because its value as training data does not depend on a model
+existing.
 
 ---
 
@@ -590,6 +893,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV MLOPS_DATA_DIR=/data
 ENV PYTHONUNBUFFERED=1
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 RUN mkdir -p /data/models
 EXPOSE 5000
 CMD ["python", "app.py"]
@@ -601,62 +906,70 @@ CMD ["python", "app.py"]
 |---|---|
 | `python:3.12-slim`, not `3.9-slim` | the model is trained on Python 3.12 with scikit-learn 1.5.1; loading that pickle under a different version raises `InconsistentVersionWarning` and can fail |
 | `ENV MLOPS_DATA_DIR=/data` | redirects SQLite out of the container's writable layer into the mounted volume |
-| `ENV PYTHONUNBUFFERED=1` | otherwise Flask's logs do not reach `docker logs` promptly, making a failed deployment hard to diagnose |
+| `ENV PYTHONUNBUFFERED=1` | otherwise Flask's logs do not reach `docker logs` promptly |
+| `ENV HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` | the encoder is baked in; any attempt to download fails loudly instead of happening silently |
 | volume mount | so collected feedback survives the `rm`/`run` cycle Jenkins performs on every deploy |
 
-### Verified behaviour
+### Verified behaviour (current image)
 
-* Build context reduced to **244 kB** by `.dockerignore`; image 645 MB.
-* **No `.db` file anywhere in the image** — confirmed by searching the
-  filesystem inside a running container.
-* The staged `model_v1.pkl` **is** present at `/app/models/`.
-* Feedback **survived** container `stop` + `rm` + recreate: 3 rows before, 3
-  rows after.
-* The full test suite passes **inside** the built image.
+| Check | Result |
+|---|---|
+| Image size | **2.14 GB** (was 645 MB) |
+| of which PyTorch CPU | 750 MB |
+| Encoder in image | `/app/encoders/all-MiniLM-L6-v2`, 88 MB, 12 files |
+| Model in image | `/app/models/model_v4.pkl` |
+| Database baked into image | **None** |
+| Offline mode | `HF_HUB_OFFLINE=1` confirmed inside the container |
+| Rebuild with cached dependency layers | 11 s |
+| Container healthy after `docker run` | 8–14 s |
+| Integration tests against the container | **15 passed** |
+| Database after tests and redeploys | unchanged — 28 rows, 5 quality flags |
 
 ### An architectural finding
 
 A container started **without** the volume reports `model_loaded: false`. The
 `.pkl` is in the image, but the *database* holds the record of which version
-is production. This is correct design — the image carries the artifact, the
-database carries the deployment decision — and it means the volume is
-mandatory, not optional.
+is production. The image carries the artifact, the database carries the
+deployment decision, and the volume is therefore mandatory.
 
 ---
 
 ## Jenkins CI/CD
-
-> **An actual Jenkins build has not been executed.** See *Limitations /
-> Pending Verification*.
 
 Declarative pipeline, twelve stages, Windows `bat` throughout.
 
 ```
    cron('H/5 * * * *')
           v
-   Checkout -> Install Dependencies -> Bootstrap Model -> Run Tests
-          │                                                  │
-          │                                     tests fail ──┴--> STOP
+   Checkout -> Install Dependencies -> Bootstrap Encoder and Model -> Run Tests
+          │                                                             │
+          │                                                tests fail ──┴--> STOP
           v
    Check Retraining Requirement
     ┌─────┴──────────────────────────┐
     │ exit 0                          │ exit 10
     v                                 v
-  SKIP everything, finish GREEN   Train Candidate
+  SKIP everything, finish GREEN   Train Candidate (data-quality filter)
                                       v
                                   Evaluate Candidate
                                       v
                                   QUALITY GATE --FAIL--> STOP (no deploy)
                                       │ PASS
                                       v
-                                  Stage Production Model
+                                  Stage Production Model (model + encoder)
                                       v
                                   Build Docker Image (:v${BUILD_NUMBER})
                                       v
                                   Deploy (rm -f, run -d, poll /health)
                                       v
-                                  Selenium UI Verification
+                                  Deployment Integration Tests
 ```
+
+Changes for the new model: the bootstrap stage runs `prepare_encoder.py`
+before `train.py` (idempotent: it only checks an already prepared encoder),
+the health check allows 60 attempts because the container takes longer to
+start, the pipeline timeout rose from 30 to 45 minutes to cover a first-time
+PyTorch install, and the final stage runs `pytest integration_tests`.
 
 ### Why a cron trigger rather than Poll SCM
 
@@ -669,9 +982,30 @@ data as well as by code.
 ### Why most runs do almost nothing
 
 Below the threshold the pipeline trains nothing, builds nothing and redeploys
-nothing — it prints `RETRAINING NOT REQUIRED` and finishes green. Rebuilding
-an unchanged model every five minutes would be pointless churn and would
-restart the live service for no reason.
+nothing — it prints `RETRAINING NOT REQUIRED` and finishes green.
+
+### Evidence from the live Jenkins
+
+Job `Smart-Feedback-CI-CD`, Jenkins 2.568.3, running as a Windows service
+under LocalSystem:
+
+| Evidence | What it shows |
+|---|---|
+| Builds #307–#326 all SUCCESS (34–83 s each); of #513–#532, 18 SUCCESS | the cron trigger, `checkout scm`, the test stage and the exit-code check work in Jenkins |
+| Builds #513 and #531 failed at Checkout: `Could not resolve host: github.com`; the next build succeeded each time | the machine's network was not up yet after waking — not a project fault |
+| Each logs `Stage "…" skipped due to when conditional` for all seven conditional stages | the `when` logic is evaluated by Jenkins itself |
+| Model v2 promoted 20 Sep 23:10; image `smart-feedback:v3` created within a minute | a full cycle — train, gate, stage, build, deploy — ran in build #3 |
+| Model v3 promoted 21 Sep 19:46; image `smart-feedback:v75` created within a minute | a second full cycle, build #75 |
+| Builds #320–#323 ran after the schema migration | the migration is backward compatible |
+
+Builds #3 and #75 have rotated out of the retained 20, so their console logs
+are gone; the evidence for them is the database rows and the image
+timestamps.
+
+**Pending:** the revised pipeline (encoder bootstrap, hybrid model, integration
+tests) has not yet run inside Jenkins. Every command in it has been run on the
+development machine in pipeline order, including a full promotion, staging,
+image build, deployment, health check and integration tests.
 
 ### Windows adaptations
 
@@ -683,53 +1017,68 @@ restart the live service for no reason.
 
 ### Runtime prerequisite
 
-Jenkins must run as an account in the local `docker-users` group. The MSI
-installer's default `LocalSystem` is not a member and cannot reach the Docker
-named pipe; this project's Python also lives under the user profile, which
-`LocalSystem` does not have on its PATH. `jenkins_env_check.bat` verifies all
-of this before the pipeline is debugged.
+`jenkins_env_check.bat` checks the Jenkins runtime before the pipeline is
+debugged: python, git, Docker CLI and daemon access, read/write access to
+`C:\mlops-data`, the encoder (`prepare_encoder.py --verify`), the exit-code
+contract, the test suite and model staging. All seven checks pass. An earlier
+version of this report stated that LocalSystem cannot reach Docker; that was
+an assumption, and the Jenkins jobs on this machine disproved it — LocalSystem
+finds Python and ran `docker build` successfully.
 
 ---
 
-## Selenium Testing
+## Automated Verification
 
-Python Selenium driven by pytest — one language across the whole project, no
-`npm` dependency.
+### Why Selenium was removed
 
-| Group | Tests |
-|---|---|
-| Application loads / navigation | 2 |
-| Feedback workflow | 4 |
-| Preview prediction (3 classes + screenshot) | 4 |
-| Dashboard | 2 |
-| Model / MLOps page | 3 |
-| **Total** | **15** |
+The project previously ended its pipeline with 15 Selenium browser tests. They
+were removed and replaced with pytest suites, for four reasons:
 
-Practical concepts used: **locators** (`By.ID`, `By.CSS_SELECTOR`,
-`By.TAG_NAME`), **explicit waits** (`WebDriverWait` with
-`expected_conditions`), the **`Select`** class for the rating dropdown,
-**assertions** in every test, and **screenshots** as evidence.
+1. **They duplicated coverage.** Every page, field and value the browser
+   tests checked can be checked from the rendered HTML, which Flask's test
+   client produces without a browser.
+2. **They added infrastructure to the Jenkins machine** — Chrome, a matching
+   driver, and headless mode because a Windows service cannot open a window —
+   for a stage whose purpose is to confirm that the container serves correct
+   responses.
+3. **They were the slowest and least deterministic part of the pipeline.**
+4. **The application has almost no client-side logic** — a character counter
+   and a preview button that calls `/predict`.
 
-Explicit waits are used exclusively — mixing them with `implicitly_wait()` is
-a documented Selenium pitfall that produces unpredictable timeouts.
+What was given up is stated honestly: the JavaScript itself (the counter,
+and the code that writes the preview response into the page) is no longer
+exercised.
 
-Stable element IDs were designed into the templates from the start
-(`#feedback_text`, `#rating`, `#submit_feedback`, `#predicted_sentiment`,
-`#actual_sentiment`, `#prediction_match`, `#total_feedback`, `#model_version`,
-`#pending_samples`, `#production_version`), so no fragile XPath is needed.
+### What replaced it
 
-**Assertions compare against the API.** Rather than merely checking that
-digits appeared, the dashboard and model tests fetch `/api/stats` and assert
-the rendered values match — proving the UI shows real data.
+| Suite | Tests | Runs against | Covers |
+|---|---|---|---|
+| `tests/test_pages.py` | 24 | Flask test client, temp DB | the pages as rendered: form, navigation, result panel, counter, dashboard and model page values matched against the API |
+| `integration_tests/test_deployment.py` | 15 | the deployed container, real HTTP | `/health` (hybrid model loaded, version matches the DB), `/predict` (full response, unseen wording, low confidence, invalid input), pages, static assets, 404, and a submission that must land in the real mounted database |
 
-**Baseline protection.** The tests submit genuine feedback through the
-genuine form. A session fixture records the highest feedback id beforehand
-and deletes everything above it afterwards, leaving the database exactly as
-it started. Verified after every run.
+The integration tests restore the database afterwards (highest id recorded
+before, everything above it deleted after) — verified: 28 rows before and
+after.
 
-Environment: `BASE_URL` (default `http://localhost:5000`) and `HEADLESS`
-(default true, since a Jenkins service cannot open a window under Windows
-Session 0 isolation).
+### The full test suite
+
+| Suite | Tests | Result |
+|---|---|---|
+| `tests/test_model.py` | 16 | passed |
+| `tests/test_semantic_model.py` | 32 | passed |
+| `tests/test_data_quality.py` | 34 | passed |
+| `tests/test_api.py` | 19 | passed |
+| `tests/test_pages.py` | 24 | passed |
+| `tests/test_validation.py` | 28 | passed |
+| `tests/test_database.py` | 30 | passed |
+| `tests/test_retraining.py` | 24 | passed |
+| `tests/test_model_safety.py` | 14 | passed |
+| **Isolated total** | **221** | **passed** (~53 s) |
+| `integration_tests/test_deployment.py` vs Docker | 15 | passed |
+
+The negation and unseen-vocabulary tests assert the behaviour that was
+measured (for example, that *"not good"* moves away from positive), not a
+desired answer, and none of them force a result.
 
 ---
 
@@ -741,154 +1090,73 @@ All figures below were measured during development. Nothing is estimated.
 
 | Component | Result |
 |---|---|
-| Model v1 | **0.9167 accuracy** |
-| Candidate accepted | **Verified** |
-| Candidate rejected | **Verified** |
-| Pytest | **130 passed** |
-| Selenium | **15 passed** |
-| Docker | **Verified** |
+| Hybrid vs TF-IDF, identical data | 0.9583 vs 0.9167 accuracy, 0.9582 vs 0.9145 F1 |
+| Production model v4 (live data) | **0.9306 accuracy**, 0.9298 F1 |
+| Candidate accepted | **Verified** — v4 over v3 |
+| Candidate rejected | **Verified** — 0.7778, production retained |
+| Data-quality filter | **Verified** — 5 live rows, 46 / 50 poisoned rows |
+| Pytest | **221 passed** |
+| Deployment integration tests | **15 passed** |
+| Docker | **Verified** — 2.14 GB, offline, healthy in 8–14 s |
 | Container persistence | **Verified** |
-| Jenkinsfile syntax | **Verified** |
-| **Actual Jenkins build** | **NOT YET VERIFIED** |
+| Jenkins below-threshold runs | **Verified in Jenkins** — #307–#326, #513–#532 (2 network failures at Checkout) |
+| Jenkins full cycles | **Verified by evidence** — builds #3, #75 |
+| **Revised pipeline in Jenkins** | **Pending push** |
 
-### Model performance
+### The evaluator's five cases, re-tested
 
-| Version | Accuracy | Precision | Recall | F1 | Samples | Outcome |
-|---|---|---|---|---|---|---|
-| v1 baseline | 0.9167 | 0.9196 | 0.9167 | 0.9145 | 288 | production |
-| v2 candidate (good data) | 0.9306 | 0.9315 | 0.9306 | 0.9302 | 298 | **accepted** |
-| v3 candidate (poisoned) | 0.7778 | — | — | — | 350 | **rejected** |
+Old = v3 (TF-IDF, production at the time of the evaluation). New = v4
+(hybrid, production now). Probabilities are negative / neutral / positive.
 
-All scored on the same fixed 72-sample holdout set.
+| Input | Rating → label | Old prediction | New prediction | Flagged? |
+|---|---|---|---|---|
+| *"not good"* | 1 → negative | positive 0.53 (0.13 / 0.33 / 0.53) | neutral 0.68 (0.25 / 0.68 / 0.07) | **yes** — label conflict with the 5-star copy; excluded from v4 |
+| *"Good"* | 1 → negative | positive 0.92 (0.02 / 0.06 / 0.92) | positive 0.64 (0.07 / 0.29 / 0.64) | **yes** — model disagreement (judged by v3 at 0.92); excluded from v4, recorded |
+| *"not good"* | 5 → positive | positive 0.53 — scored "correct" only because a wrong prediction met a wrong rating | neutral 0.68 | **yes** — label conflict; excluded from v4 |
+| *"the experience could be better."* | 4 → positive | neutral 0.46 (0.33 / 0.46 / 0.21) | positive 0.70 (0.07 / 0.22 / 0.70) | no |
+| *"something something"* | — | negative 0.38 (0.38 / 0.36 / 0.26) | neutral 0.46 (0.38 / 0.46 / 0.16) | **low confidence** |
 
-### Quality gate calibration
+Read honestly: the new model no longer calls *"not good"* positive, but calls
+it neutral, not negative. It still reads *"Good"* as positive — correctly;
+the rating was the error, and it no longer reaches training. *"the experience
+could be better."* at 4 stars was a genuine submission (id 50) and part of
+v4's training data, so v4's positive answer there partly reflects having seen
+that exact text; the same model family trained without it answers neutral.
+Meaningless input is now flagged instead of receiving a confident-looking
+label. The model was not tuned toward any of these five inputs.
 
-| Injected bad rows | Candidate accuracy | Gate at 0.85 |
+### Challenge set, full
+
+| Category | TF-IDF | Hybrid |
 |---|---|---|
-| 0 | 0.9167 | pass |
-| 20 | 0.8750 | pass |
-| 30 | 0.8611 | pass |
-| 40 | 0.8194 | **FAIL** |
-| 50 | 0.7778 | **FAIL** |
-
-### Testing
-
-| Suite | Tests | Result |
-|---|---|---|
-| `tests/test_model.py` | 16 | passed |
-| `tests/test_api.py` | 19 | passed |
-| `tests/test_validation.py` | 28 | passed |
-| `tests/test_database.py` | 30 | passed |
-| `tests/test_retraining.py` | 23 | passed |
-| `tests/test_model_safety.py` | 14 | passed |
-| **Unit / integration total** | **130** | **passed** |
-| `selenium_tests/test_feedback_ui.py` | 15 | passed |
-| Selenium vs local Flask | 15 | passed |
-| Selenium vs Docker container | 15 | passed |
-| Full suite inside the Docker image | 130 | passed |
-
-Running the suite inside the built image confirms the artifact itself is
-sound on Linux with the pinned dependencies, not merely on the development
-host.
-
-### Docker
-
-| Check | Result |
-|---|---|
-| Build context size | 244 kB |
-| Image size | 645 MB |
-| Database baked into image | **None** — verified by filesystem search |
-| Staged model in image | `/app/models/model_v1.pkl`, 10289 bytes |
-| Feedback before teardown | 3 rows |
-| Feedback after `stop` + `rm` + recreate | **3 rows** |
-
-### Jenkins pipeline simulation
-
-Every stage command executed in order with real exit codes. **This is a
-simulation, not a Jenkins build.**
-
-| Stage | Below threshold | Good data | Poisoned data |
-|---|---|---|---|
-| Run Tests | passed | — | — |
-| Check Retraining | exit 0 → false | exit 10 → true | exit 10 → true |
-| Train Candidate | **skipped** | exit 0 | exit 0 |
-| Evaluate Candidate | **skipped** | 0.9306 | 0.7917 |
-| Quality Gate | **skipped** | **PASSED**, v2 promoted | **FAILED, exit 1** |
-| Stage Production Model | **skipped** | exit 0 | **not reached** |
-| Build Docker Image | **skipped** | `smart-feedback:v42` | **not reached** |
-| Deploy | **skipped** | healthy | **not reached** |
-| Selenium | **skipped** | skipped | **not reached** |
+| Negation (12) | 6 | **8** |
+| Unseen wording (11) | 6 | **9** |
+| Low information flagged (8) | — | **8** |
 
 ---
 
-## Limitations / Pending Verification
+## Limitations
 
-### Actual Jenkins execution is NOT verified
-
-**Jenkins 2.568.3 could not be started on the development machine.** This is
-not a project defect and not a Jenkins misconfiguration.
-
-**Symptom** — Jetty fails during startup:
-
-```
-java.io.IOException: Unable to establish loopback connection
-java.net.SocketException: Invalid argument: connect
-  at sun.nio.ch.PipeImpl$Initializer$LoopbackConnector.run
-```
-
-**Diagnosis** — isolated with a minimal Java program:
-
-| Operation | Result |
-|---|---|
-| Plain TCP loopback connect | OK |
-| `Pipe.open()` | OK |
-| `Selector.open()` | **FAILS** |
-
-`Selector.open()` fails identically on **JDK 21.0.11, 24 and 25**, under the
-default selector, `WindowsSelectorProvider` and `WEPollSelectorProvider`, and
-with `-Djava.net.preferIPv4Stack=true`. It also fails outside any sandbox.
-Any Java NIO server — Jenkins, Tomcat, Jetty, Spring Boot — would fail
-identically on this machine.
-
-**Likely cause.** Three antivirus products are installed simultaneously
-(Quick Heal AntiVirus Pro, Windows Defender, McAfee). One of their network
-drivers appears to reject the loopback socket pair that NIO selectors create.
-Windows Firewall was checked: every `java.exe` rule is *Allow*, with no block
-rules.
-
-**Remedies, all requiring administrator rights** (unavailable on the
-development account): `netsh winsock reset` plus a reboot; an antivirus
-exclusion for `java.exe`; or removing the redundant antivirus products.
-
-### Verification status, stated precisely
-
-| Claim | Status |
-|---|---|
-| Application verified locally | **Verified** |
-| Application verified inside Docker | **Verified** |
-| `Jenkinsfile` Groovy syntax | **Verified** — parsed with `groovy-all-2.4.21.jar` extracted from `jenkins.war` |
-| Jenkins pipeline logic | **Simulated** — all stages, all three scenarios |
-| Jenkins runtime prerequisites | **Verified** — all six checks pass as the target user |
-| **Actual Jenkins build** | **NOT YET VERIFIED** |
-
-What the simulation covered: every stage command, in order, with real exit
-codes, across all three scenarios. What remains unproven: Jenkins' own
-orchestration — `when` expression evaluation, `checkout scm`, artifact
-archiving, the cron trigger firing, and the stage view.
-
-### Other limitations
-
-* **The dataset is synthetic** — 360 hand-written rows, artificially balanced.
-  Real feedback would be noisier and skewed towards positive ratings.
-* **The model is intentionally simple.** TF-IDF + Logistic Regression was
-  chosen for explainability over peak accuracy. It cannot handle sarcasm,
-  negation scope or unseen vocabulary.
-* **Single-node deployment.** One container on one host, no orchestration or
-  automated rollback. Archived artifacts are retained so manual rollback is
-  possible.
-* **No authentication.** Anyone who can reach the port can submit feedback.
-* **Threshold-based triggering only.** Retraining is triggered by sample
-  count, not by detected drift or by a drop in live accuracy.
+* **Negation is still weak.** *"not good"* and *"not very good"* are read as
+  neutral, *"I liked it"* as neutral; 8 of 12 negation probes right. Sentence
+  embeddings represent negation only weakly, and no rule was added to hide it.
+* **Bare single words are read less confidently** (*"Good"* 0.64), so the
+  disagreement check cannot catch a new *"Good"* rated 1 star.
+* **One live feedback text is effectively memorised** (id 50, above).
+* **The disagreement check is only as reliable as the model**; 4 of 50
+  poisoned rows passed it.
+* **Small, synthetic data.** 360 hand-written rows plus 28 real submissions;
+  one holdout row is 1.4 accuracy points, and the challenge set is 31
+  sentences. Small differences should not be over-read.
+* **A heavier deployment.** Image 645 MB → 2.14 GB, prediction ~0.5 → ~12 ms,
+  retraining 0.01 → 0.45 s, and importing the encoder libraries adds 15–20 s
+  to a cold start on Windows.
+* **Single-node deployment**, no orchestration or automated rollback.
+* **No authentication.**
+* **Threshold-based triggering only** — not drift or live-accuracy based.
+* **Shared global Python** across the Jenkins jobs on this machine; another
+  job pinning a different Flask version could change this project's
+  environment between builds.
 
 ---
 
@@ -897,30 +1165,15 @@ archiving, the cron trigger firing, and the stage view.
 | Practical | Project component | What is demonstrated |
 |---|---|---|
 | **Experiment 1** — Explore Git, GitHub Commands and Source Code Management | repository, `.gitignore`, branch strategy | `init`, `add`, `status`, `commit`, `log`, `branch`, `checkout`, `remote add origin`, `push`, `pull` |
-| **Experiment 2** — Jenkins installation and setup | Jenkins on `localhost:8080`, `jenkins_env_check.bat` | installing and exploring the CI/CD environment; the practical's `.war` method was the one attempted here |
+| **Experiment 2** — Jenkins installation and setup | Jenkins on `localhost:8080`, `jenkins_env_check.bat` | installing and exploring the CI/CD environment |
 | **Experiment 3** — Demonstrate CI/CD using Jenkins | `jenkins_env_check.bat` as a Freestyle job | Freestyle projects, *Execute Windows batch command*, Console Output, non-zero exit codes — and the basis for choosing `bat` over `sh` |
 | **Experiment 4** — Explore Docker commands for content management | container lifecycle commands; the pipeline's teardown step | `docker ps`, `stop`, `rm`, `images`, `logs`, image/container distinction |
 | **Experiment 5** — Develop a simple containerized application | `Dockerfile`, Flask in a container, `-p 5000:5000` | Dockerfile authoring, building an image, port mapping, running a Flask app in Docker |
-| **PS4 — CI/CD Pipeline / ML CI-CD Practical** | `Jenkinsfile`, `train.py`, `tests/test_model.py`, the **quality gate** | Freestyle vs Pipeline-as-Code, Groovy stages, `Code + Data + Model`, retrain → evaluate → package → deploy, and the quality-gate concept this project is built around |
-| **Experiment 9** — Deploying Applications/Models using Docker through Jenkins | `app.py` `/predict`, Deploy stage, `healthcheck.py` | training vs inference, baking the model artifact into the image, `docker rm -f` before `docker run`, testing the live API with `Invoke-RestMethod` |
-| **Selenium (Python practical)** | `selenium_tests/test_feedback_ui.py` | `By` locators, implicit vs explicit waits, the `Select` class, assertions, `save_screenshot` |
-| **Selenium (Node.js practical)** | the same suite, in Python | concepts adapted rather than the language — see below |
+| **PS4 — CI/CD Pipeline / ML CI-CD Practical** | `Jenkinsfile`, `train.py`, `tests/`, the **quality gate** | Freestyle vs Pipeline-as-Code, Groovy stages, `Code + Data + Model`, retrain → evaluate → package → deploy, and the quality-gate concept this project is built around |
+| **Experiment 9** — Deploying Applications/Models using Docker through Jenkins | `app.py` `/predict`, Deploy stage, `healthcheck.py`, `integration_tests/` | training vs inference, baking the model artifact into the image, `docker rm -f` before `docker run`, testing the live API |
 
-### Note on the two Selenium practicals
-
-The first Selenium practical is Python; the second is Node.js with
-`selenium-webdriver`. This project uses **Python Selenium throughout**,
-keeping the entire codebase in one language, reusing the existing pytest
-infrastructure, and avoiding an `npm` dependency for a single test suite.
-
-The Node.js practical's concepts are nonetheless all present, translated:
-
-| Node.js practical concept | Python equivalent used here |
-|---|---|
-| `async/await` to force sequential execution | not required — the Selenium Python binding is synchronous by design, so the ordering problem `async/await` solves does not arise |
-| `driver.wait(until.elementLocated(...), 10000)` | `WebDriverWait(driver, 15).until(EC.presence_of_element_located(...))` |
-| Node's built-in `assert` module | pytest's plain `assert` statement |
-| `fs.writeFileSync('shot.png', image, 'base64')` | `driver.save_screenshot(path)` |
+**The Selenium practicals are no longer demonstrated by this project** — see
+*Automated Verification* for the reasons and the replacement.
 
 ### Note on PS4's experiment number
 
@@ -936,46 +1189,48 @@ sufficient to claim a number.
 ## Learning Outcomes
 
 1. **MLOps is not CI/CD with a model attached.** Traditional pipelines version
-   code; an ML pipeline must version code, data *and* model, and must be
-   triggered by data changes as well as code changes. The cron trigger exists
-   precisely because feedback lives in SQLite rather than Git.
+   code; an ML pipeline must version code, data *and* model — and here the
+   encoder too — and must be triggered by data changes as well as code
+   changes.
 
 2. **An automated pipeline without a quality gate is a liability.** The most
    valuable stage in this project is the one that *refuses* to deploy.
-   Demonstrating rejection matters more than demonstrating success.
 
 3. **Evaluation methodology determines whether metrics mean anything.** The
-   fixed holdout set was the single most important design decision. Without
-   it, "candidate 0.93 vs production 0.92" compares two numbers measured on
-   different data.
+   fixed holdout set made it possible to compare a hybrid model against a
+   TF-IDF model on equal terms, and to let the unchanged gate decide.
 
-4. **Data quality dominates model choice at small scale.** Rebuilding the
-   dataset for vocabulary recurrence moved accuracy from 0.5833 to 0.9167.
-   No amount of hyperparameter tuning would have achieved that.
+4. **A better representation is not free.** The hybrid gained 4 accuracy
+   points and generalises further, and cost a 3.3× larger image, 25× slower
+   predictions and a new artifact to version. Whether that is worth it is a
+   judgement the measurements make possible, not one they make for you.
 
-5. **Test assumptions by measuring them.** Bigrams were expected to help and
-   measurably hurt. Cross-validation, not intuition, chose the final
-   configuration.
+5. **An improvement on paper can fail the gate.** Embeddings alone looked
+   better on unfamiliar wording and would have been rejected for losing
+   7 points on the holdout.
 
-6. **Containers separate the immutable from the mutable.** Discovering that a
-   container without its volume reports `model_loaded: false` clarified the
-   architecture: the image carries the artifact, the database carries the
-   deployment decision.
+6. **The label can be the bug.** Part of what looked like model error was
+   bad ratings. Improving the model would not have fixed that; checking the
+   data did.
 
-7. **Cross-platform bugs hide until you actually run the thing.** A Windows
-   path stored in the database could not be parsed by `os.path.basename()`
-   inside a Linux container. No unit test would have caught it — only running
-   the container did.
+7. **Thresholds should come from validation data.** Out-of-fold predictions
+   gave both thresholds a stated derivation — and showed that the obvious
+   signal (similarity to training data) was the weaker one.
 
-8. **Tests find real defects, not just regressions.** Writing a test for
-   duplicate model versions exposed a connection leak in every database
-   function: a failed statement skipped `close()`, and on Windows the leaked
-   handle locked the database file.
+8. **Decisions made by a model need a memory.** A less confident successor
+   model would have re-admitted a label its predecessor rejected. Recording
+   accepted exclusions fixed that.
 
-9. **Honest reporting is part of engineering.** Jenkins could not be started
-   on this machine. Recording that precisely — with the diagnosis and the
-   distinction between simulated and verified — is more useful than a vague
-   claim of success.
+9. **Test assumptions by measuring them.** Bigrams were expected to help and
+   measurably hurt; the poisoning calibration showed the new model is *more*
+   sensitive to bad labels, not less.
+
+10. **Containers separate the immutable from the mutable.** The image carries
+    the model and encoder; the database carries the deployment decision.
+
+11. **Correct your own documentation.** This report once stated that
+    LocalSystem could not reach Docker. The Jenkins jobs on this machine
+    showed otherwise, and the claim was withdrawn.
 
 ---
 
@@ -983,50 +1238,43 @@ sufficient to claim a number.
 
 The project delivers a working, feedback-driven MLOps lifecycle. Feedback
 submitted through a Flask application becomes labelled training data
-automatically; crossing a configurable threshold triggers retraining; every
-candidate is scored on a permanently frozen holdout set; and a two-condition
-quality gate decides whether it is fit to deploy. Approved models are
-versioned, baked into a Docker image and deployed, then verified in a real
-browser.
+automatically; contradictory ratings are detected and kept out of training;
+crossing a configurable threshold triggers retraining; every candidate is
+scored on a permanently frozen holdout set; and a two-condition quality gate
+decides whether it is fit to deploy. Approved models are versioned together
+with their encoder, baked into an offline Docker image, deployed, and checked
+over HTTP.
 
-Both quality-gate outcomes were demonstrated with measured results: a genuine
-improvement was promoted from 0.9167 to 0.9306, and a deliberately poisoned
-candidate scoring 0.7778 was rejected with the production model left
-untouched and its training samples preserved for the next attempt. 130 unit
-and integration tests and 15 Selenium browser tests pass, against both a
-local server and the deployed container.
+Replacing the TF-IDF model with a TF-IDF + sentence-embedding hybrid was
+justified by measurement on identical data: 0.9583 against 0.9167 on the
+frozen holdout, and better results on negation and unseen wording. It is not
+a solved problem — negation remains weak and bare words are read with less
+confidence — and it made the deployment substantially heavier. Those costs
+are stated alongside the gains.
 
-The central lesson is that automated retraining is only safe when it is
-guarded. A pipeline that deploys whatever it just trained is worse than no
-pipeline at all, because it automates degradation. The quality gate — and the
-fixed holdout set that makes its comparison meaningful — is what turns
-automation into something trustworthy.
-
-One objective is incompletely met. Jenkins could not be started on the
-development machine because of a system-level Java networking fault
-unrelated to this project. The pipeline is written, syntax-validated and
-logically simulated across all three scenarios, and every command it invokes
-is independently verified — but an actual Jenkins build has not run, and this
-report does not claim otherwise.
+The central lesson is unchanged and reinforced: automated retraining is only
+safe when it is guarded. This project now guards it twice — once on the data,
+once on the model — and measured both layers doing their job.
 
 ---
 
 ## Future Scope
 
-1. **Drift-based triggering.** Retrain when live prediction accuracy drops or
-   the input distribution shifts, rather than on a fixed sample count. The
-   `prediction_correct` column already records what is needed.
-2. **Automated rollback.** Archived artifacts are retained, so redeploying a
+1. **Better negation handling** without rules — more negated examples in the
+   training pool, or fine-tuning once far more data exists — judged, as
+   always, by the unchanged quality gate.
+2. **A review queue for flagged rows**, so a person can confirm or clear each
+   exclusion from the dashboard.
+3. **Drift-based triggering.** Retrain when live prediction accuracy drops or
+   the input distribution shifts, rather than on a fixed sample count.
+4. **Automated rollback.** Archived artifacts are retained, so redeploying a
    previous version could be a single pipeline stage.
-3. **Human approval gate.** Jenkins `input` could require sign-off before a
-   new model goes live, useful in a regulated setting.
-4. **Richer models.** Word embeddings or a small transformer, with the
-   existing quality gate deciding objectively whether the added complexity
-   actually helps.
-5. **Real dataset.** Replace the synthetic seed data with genuinely collected
+5. **A smaller image**, for example by exporting the encoder to ONNX and
+   dropping PyTorch from the runtime.
+6. **Human approval gate.** Jenkins `input` could require sign-off before a
+   new model goes live.
+7. **Real dataset.** Replace the synthetic seed data with genuinely collected
    feedback.
-6. **Experiment tracking.** MLflow or similar for richer comparison than the
-   `model_versions` table provides.
-7. **Authentication and rate limiting** before any real deployment.
-8. **Complete the Jenkins verification** on a machine with a working Java NIO
-   stack — the immediate next step.
+8. **Authentication and rate limiting** before any real deployment.
+9. **Run the revised pipeline in Jenkins** — the immediate next step, once
+   the revision is pushed.

@@ -112,10 +112,43 @@
                     {% endif %}
                 </span>
             </div>
+            {% if result.confidence is not none %}
+            <div class="result-row">
+                <span class="result-label">Model confidence</span>
+                <span class="result-value">
+                    <span id="prediction_confidence">{{ '%.0f' | format(result.confidence * 100) }}%</span>
+                    {% if result.low_confidence %}
+                    <span id="low_confidence_flag" class="pill pill-neutral">low confidence</span>
+                    {% endif %}
+                </span>
+            </div>
+            {% endif %}
             {% if result.model_version %}
             <div class="result-row">
                 <span class="result-label">Predicted by</span>
                 <span id="result_model_version" class="result-value">model v{{ result.model_version }}</span>
+            </div>
+            {% endif %}
+
+            {% if result.low_confidence %}
+            <div id="low_confidence_note" class="alert alert-warn">
+                The model had limited evidence for this prediction (below
+                {{ '%.0f' | format(stats.low_confidence_threshold * 100) }}%). This
+                happens with very short or unfamiliar wording. The prediction
+                is still recorded.
+            </div>
+            {% endif %}
+
+            {% if result.inconsistent %}
+            <div id="inconsistency_note" class="alert alert-warn">
+                <strong>Possible text / rating mismatch:</strong>
+                {{ result.inconsistency_reasons | join('; ') }}.
+                {% if result.excluded_from_training %}
+                It is stored, but will be left out of retraining so a
+                contradictory label cannot degrade the next model.
+                {% else %}
+                Exclusion is switched off, so it will still be used for training.
+                {% endif %}
             </div>
             {% endif %}
 

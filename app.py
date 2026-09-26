@@ -30,7 +30,9 @@ Routes
 from flask import Flask, jsonify, render_template, request
 
 import config
+import data_quality
 import database
+import dataset
 import model_loader
 
 app = Flask(__name__)
@@ -123,7 +125,26 @@ def build_stats():
 
     # Whether the model file behind that record is actually loadable.
     stats.update(model_loader.describe())
+    stats["low_confidence_threshold"] = config.LOW_CONFIDENCE_THRESHOLD
     return stats
+
+
+def quality_report():
+    """
+    Text / rating consistency over all collected feedback.
+
+    Returns (flags, summary): flags maps a feedback id to the reasons it looks
+    inconsistent; summary holds the counts. The current production model
+    reads each text, so every row is judged the same way the next retraining
+    run will judge it. See data_quality.py.
+    """
+    records = dataset.load_feedback_records()
+    model, _ = model_loader.get_model()
+    flags = data_quality.assess(records, model)
+    summary = data_quality.summarise(flags)
+    summary["excluded_from_training"] = config.EXCLUDE_INCONSISTENT_FEEDBACK
+    summary["disagreement_confidence"] = config.DISAGREEMENT_CONFIDENCE
+    return flags, summary
 
 
 # ---------------------------------------------------------------------------
@@ -172,22 +193,34 @@ def submit_feedback():
             },
         ), 400
 
-    # The model's guess. May be None if no model is deployed yet - the
-    # feedback is still stored, because its value as training data does not
-    # depend on a model existing.
-    predicted, model_version = model_loader.predict(text)
+    # The model's guess, and how sure it is. May be None if no model is
+    # deployed yet - the feedback is still stored, because its value as
+    # training data does not depend on a model existing.
+    detail = model_loader.predict_detailed(text)
+    predicted = detail["sentiment"]
+    model_version = detail["model_version"]
 
     # The truth, derived from the rating the user chose.
     actual = config.rating_to_sentiment(rating)
 
-    database.insert_feedback(
+    new_id = database.insert_feedback(
         feedback_text=text,
         rating=rating,
         predicted_sentiment=predicted,
         name=name,
         model_version=model_version,
         source="user",
+        prediction_confidence=detail["confidence"],
+        low_confidence=detail["low_confidence"],
     )
+
+    # Does this rating contradict its own text? Checked the same way the next
+    # retraining run will check it, and shown to the user straight away.
+    reasons = []
+    if data_quality.is_disagreement(predicted, detail["confidence"], actual):
+        reasons.append(data_quality.REASON_DISAGREEMENT)
+    if new_id in data_quality.find_label_conflicts(dataset.load_feedback_records()):
+        reasons.append(data_quality.REASON_CONFLICT)
 
     result = {
         "name": name,
@@ -197,6 +230,12 @@ def submit_feedback():
         "actual_sentiment": actual,
         "prediction_correct": (predicted == actual) if predicted else None,
         "model_version": model_version,
+        "confidence": detail["confidence"],
+        "probabilities": detail["probabilities"],
+        "low_confidence": detail["low_confidence"],
+        "inconsistent": bool(reasons),
+        "inconsistency_reasons": [data_quality.REASON_TEXT[r] for r in reasons],
+        "excluded_from_training": bool(reasons) and config.EXCLUDE_INCONSISTENT_FEEDBACK,
     }
 
     return render_template(
@@ -210,10 +249,14 @@ def submit_feedback():
 
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
-    """Aggregate feedback statistics and current model status."""
+    """Aggregate feedback statistics, data quality and current model status."""
+    flags, quality = quality_report()
     return render_template(
         "dashboard.html",
         stats=build_stats(),
+        quality=quality,
+        flags=flags,
+        reason_text=data_quality.REASON_TEXT,
         recent=database.get_recent_feedback(config.RECENT_FEEDBACK_LIMIT),
     )
 
@@ -248,7 +291,15 @@ def predict_api():
     from a numeric feature vector to text input.
 
         Request : {"text": "the service was excellent"}
-        Response: {"prediction": "positive"}
+        Response: {"prediction": "positive",
+                   "model_version": 4,
+                   "confidence": 0.93,
+                   "low_confidence": false,
+                   "probabilities": {"negative": 0.02, "neutral": 0.05,
+                                     "positive": 0.93}}
+
+    "prediction" is unchanged from earlier releases, so existing callers keep
+    working. low_confidence is advisory - see config.LOW_CONFIDENCE_THRESHOLD.
 
     Accepts JSON or form-encoded input so it can be called from the browser
     and from PowerShell.
@@ -265,23 +316,28 @@ def predict_api():
     if error:
         return jsonify({"error": error}), 400
 
-    prediction, model_version = model_loader.predict(text)
-    if prediction is None:
+    detail = model_loader.predict_detailed(text)
+    if detail["sentiment"] is None:
         return jsonify({
             "error": "No production model is available.",
             "detail": model_loader.get_last_error(),
         }), 503
 
     return jsonify({
-        "prediction": prediction,
-        "model_version": model_version,
+        "prediction": detail["sentiment"],
+        "model_version": detail["model_version"],
+        "confidence": detail["confidence"],
+        "low_confidence": detail["low_confidence"],
+        "probabilities": detail["probabilities"],
     })
 
 
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
     """Everything the dashboard shows, as JSON."""
-    return jsonify(build_stats())
+    stats = build_stats()
+    _, stats["data_quality"] = quality_report()
+    return jsonify(stats)
 
 
 @app.route("/api/model", methods=["GET"])

@@ -6,10 +6,10 @@
 # the port exposed, and the Flask app as the start command.
 #
 # The image is a SELF-CONTAINED DEPLOYMENT ARTIFACT. It holds the application
-# code AND the exact model version that was approved by the quality gate.
-# Runtime state - the SQLite database - deliberately stays outside, in a
-# mounted volume, so recreating the container never destroys collected
-# feedback.
+# code, the exact model version that was approved by the quality gate, AND the
+# frozen sentence encoder that model was trained against. Runtime state - the
+# SQLite database - deliberately stays outside, in a mounted volume, so
+# recreating the container never destroys collected feedback.
 
 # 1. Use an official Python runtime as a parent image.
 #
@@ -32,11 +32,16 @@ WORKDIR /app
 COPY requirements.txt .
 
 # 4. Install the pinned dependencies.
+#    requirements.txt names PyTorch's CPU-only index, so this installs the
+#    CPU build of PyTorch rather than the multi-gigabyte CUDA one. This is the
+#    slowest layer to build the first time; Docker caches it afterwards.
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Copy the application code AND the staged production model.
+# 5. Copy the application code, the staged production model AND the staged
+#    sentence encoder.
 #    .dockerignore keeps the database, the build/ scratch space and the
-#    caches out; models/model_vN.pkl is intentionally included.
+#    caches out; models/model_vN.pkl and encoders/<name>/ are intentionally
+#    included. stage_model.py puts both there immediately before the build.
 COPY . .
 
 # 6. Point the application at the mounted data volume.
@@ -55,6 +60,13 @@ ENV MLOPS_DATA_DIR=/data
 #    lines do not appear in `docker logs` until the buffer flushes, which
 #    makes a failed Jenkins deployment much harder to diagnose.
 ENV PYTHONUNBUFFERED=1
+
+#    The container must NEVER download a model. The encoder is baked in at
+#    /app/encoders, so a network call could only mean something is wrong -
+#    and failing loudly is better than silently fetching a different model
+#    at prediction time.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 
 #    Create the mount point so the container still starts (with an empty
 #    database it creates itself) even when no volume is supplied.

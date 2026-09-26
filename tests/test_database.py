@@ -162,7 +162,7 @@ def test_deleting_by_source_leaves_other_rows_untouched():
 
 
 def test_max_feedback_id_on_an_empty_table():
-    """The Selenium 'before' marker is 0 when nothing has been stored."""
+    """The integration tests' 'before' marker is 0 when nothing is stored."""
     assert database.get_max_feedback_id() == 0
 
 
@@ -173,7 +173,7 @@ def test_max_feedback_id_tracks_the_newest_row():
 
 def test_deleting_after_an_id_restores_the_earlier_state():
     """
-    The Selenium cleanup removes only what the browser tests created.
+    The integration-test cleanup removes only what those tests created.
 
     Rows that existed before the marker must survive untouched.
     """
@@ -182,7 +182,7 @@ def test_deleting_after_an_id_restores_the_earlier_state():
     marker = database.get_max_feedback_id()
 
     for _ in range(4):
-        database.insert_feedback("row created by a browser test", 4)
+        database.insert_feedback("row created by an integration test", 4)
     assert database.get_feedback_stats()["total_feedback"] == 6
 
     removed = database.delete_feedback_after_id(marker)

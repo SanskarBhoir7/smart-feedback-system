@@ -88,9 +88,28 @@ CREATE TABLE IF NOT EXISTS feedback (
     model_version       INTEGER,
     source              TEXT    NOT NULL DEFAULT 'user',
     used_in_training    INTEGER NOT NULL DEFAULT 0,
-    created_at          TEXT    NOT NULL
+    created_at          TEXT    NOT NULL,
+    prediction_confidence REAL,
+    low_confidence      INTEGER,
+    quality_flag        TEXT
 );
 """
+
+# Columns added after the first release. A database created before them is
+# upgraded in place by _migrate(), so existing feedback is never lost.
+#
+#   prediction_confidence   the model's top class probability at submission
+#   low_confidence          1 if that was below config.LOW_CONFIDENCE_THRESHOLD
+#   quality_flag            why an ACCEPTED training run excluded this row as
+#                           inconsistent, e.g. "label_conflict". Once set, the
+#                           row stays out of training - see set_quality_flags()
+#
+# All are NULL for rows stored before they existed.
+FEEDBACK_ADDED_COLUMNS = [
+    ("prediction_confidence", "REAL"),
+    ("low_confidence", "INTEGER"),
+    ("quality_flag", "TEXT"),
+]
 
 MODEL_VERSIONS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS model_versions (
@@ -109,13 +128,32 @@ CREATE TABLE IF NOT EXISTS model_versions (
 """
 
 
+def _migrate(connection):
+    """
+    Add any column a database created by an earlier release is missing.
+
+    Idempotent: it only ever ADDS nullable columns, so running it on a
+    database that is already current does nothing, and no existing row or
+    value is changed.
+    """
+    present = {row["name"] for row in connection.execute("PRAGMA table_info(feedback)")}
+    for column, column_type in FEEDBACK_ADDED_COLUMNS:
+        if column not in present:
+            connection.execute(
+                "ALTER TABLE feedback ADD COLUMN {} {}".format(column, column_type))
+
+
 def init_db():
-    """Create both tables if they do not already exist. Safe to call anytime."""
+    """
+    Create both tables if they do not already exist, and upgrade an older
+    database in place. Safe to call any number of times.
+    """
     config.ensure_directories()
     with _connect() as connection:
         with connection:
             connection.execute(FEEDBACK_SCHEMA)
             connection.execute(MODEL_VERSIONS_SCHEMA)
+            _migrate(connection)
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +161,16 @@ def init_db():
 # ---------------------------------------------------------------------------
 
 def insert_feedback(feedback_text, rating, predicted_sentiment=None,
-                    name=None, model_version=None, source="user"):
+                    name=None, model_version=None, source="user",
+                    prediction_confidence=None, low_confidence=None):
     """
     Store one piece of feedback and return its new row id.
 
     The true label is derived from the star rating, not from the model. That
     is what makes every submission a usable TRAINING SAMPLE.
+
+    prediction_confidence and low_confidence record how sure the model was.
+    They are informational: they do not change the label or the training.
     """
     actual_sentiment = config.rating_to_sentiment(rating)
 
@@ -138,6 +180,9 @@ def insert_feedback(feedback_text, rating, predicted_sentiment=None,
     else:
         prediction_correct = 1 if predicted_sentiment == actual_sentiment else 0
 
+    if low_confidence is not None:
+        low_confidence = 1 if low_confidence else 0
+
     with _connect() as connection:
         with connection:
             cursor = connection.execute(
@@ -145,12 +190,13 @@ def insert_feedback(feedback_text, rating, predicted_sentiment=None,
                 INSERT INTO feedback (
                     name, feedback_text, rating, predicted_sentiment,
                     actual_sentiment, prediction_correct, model_version,
-                    source, used_in_training, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    source, used_in_training, created_at,
+                    prediction_confidence, low_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (name, feedback_text, int(rating), predicted_sentiment,
                  actual_sentiment, prediction_correct, model_version,
-                 source, _now()),
+                 source, _now(), prediction_confidence, low_confidence),
             )
             return cursor.lastrowid
 
@@ -171,6 +217,48 @@ def mark_all_samples_used():
             return cursor.rowcount
 
 
+def set_quality_flags(flags):
+    """
+    Record that an ACCEPTED training run excluded these rows as inconsistent.
+
+    flags maps a feedback id to a list of reasons. Only rows with no flag yet
+    are written; an existing decision is never overwritten.
+
+    WHY THIS IS STORED rather than recomputed each run: the model-disagreement
+    check depends on how confident the current production model is. After
+    the TF-IDF model was replaced, the new model was LESS sure that "Good" is
+    positive (0.64 rather than 0.92), so a fresh check alone would have let
+    "Good" with 1 star - labelled negative - quietly back into training.
+    Recording the decision stops a later, less certain judge from silently
+    re-admitting a label an earlier run already rejected.
+
+    Called only when a candidate is accepted, mirroring mark_all_samples_used:
+    a rejected run changes nothing. clear_quality_flag() reverses it by hand.
+    """
+    written = 0
+    with _connect() as connection:
+        with connection:
+            for row_id, reasons in flags.items():
+                cursor = connection.execute(
+                    "UPDATE feedback SET quality_flag = ? "
+                    "WHERE id = ? AND quality_flag IS NULL",
+                    (",".join(sorted(set(reasons))), row_id))
+                written += cursor.rowcount
+    return written
+
+
+def clear_quality_flag(row_id):
+    """
+    Let a person reverse an exclusion - for example after correcting a
+    rating. The next training run re-checks the row from scratch.
+    """
+    with _connect() as connection:
+        with connection:
+            cursor = connection.execute(
+                "UPDATE feedback SET quality_flag = NULL WHERE id = ?", (row_id,))
+            return cursor.rowcount
+
+
 def delete_feedback_by_source(source):
     """Remove all rows with a given source. Used to undo the bad-data demo."""
     with _connect() as connection:
@@ -184,8 +272,9 @@ def get_max_feedback_id():
     """
     The highest feedback id currently stored, or 0 when the table is empty.
 
-    Used by the Selenium suite to take a "before" marker so that everything
-    it submits through the browser can be removed afterwards.
+    Used by the deployment integration tests to take a "before" marker, so
+    that everything they submit to the running container can be removed
+    afterwards.
     """
     with _connect() as connection:
         row = connection.execute(
@@ -197,9 +286,9 @@ def delete_feedback_after_id(row_id):
     """
     Remove every feedback row newer than the given id.
 
-    The Selenium tests submit real feedback through the real UI - that is the
-    point of them - but they must not leave that data behind in the
-    development database. Recording the highest id beforehand and deleting
+    The deployment integration tests submit real feedback to the real running
+    container - that is the point of them - but they must not leave that data
+    in the shared database. Recording the highest id beforehand and deleting
     anything above it afterwards restores the exact previous state without
     touching genuine rows.
     """
@@ -246,6 +335,21 @@ def get_training_rows():
         rows = connection.execute(
             "SELECT feedback_text, actual_sentiment FROM feedback").fetchall()
         return [(r["feedback_text"], r["actual_sentiment"]) for r in rows]
+
+
+def get_feedback_records():
+    """
+    Every feedback row with its id, oldest first.
+
+    The ids are what let data_quality.py flag individual rows and let
+    retraining report exactly which ones it excluded.
+    """
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT id, feedback_text, rating, actual_sentiment, "
+            "predicted_sentiment, prediction_confidence, quality_flag "
+            "FROM feedback ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_recent_feedback(limit=10):
