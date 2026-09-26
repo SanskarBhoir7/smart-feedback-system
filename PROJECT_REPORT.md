@@ -488,8 +488,12 @@ either; they are reported as measured.
 
 ### Engineering choices that came with it
 
-* **CPU-only PyTorch** from PyTorch's CPU wheel index, instead of the default
-  build that bundles GPU libraries.
+* **CPU-only PyTorch.** In the Linux image it comes from PyTorch's CPU wheel
+  index (`2.13.0+cpu`) instead of PyPI's default build, which bundles GPU
+  libraries. On the Windows host PyPI's wheel is already CPU-only and is
+  published as plain `2.13.0`; pinning `+cpu` there would have made Jenkins'
+  first build re-download torch and replace the installed copy in the shared
+  Python. The pre-push Jenkins replay caught it.
 * **The encoder is never pickled.** `model_vN.pkl` stores the TF-IDF
   vocabulary, the classifier weights and the encoder's SHA-256 fingerprint.
   At load time the model checks the encoder it finds and refuses to run with
@@ -1003,9 +1007,24 @@ are gone; the evidence for them is the database rows and the image
 timestamps.
 
 **Pending:** the revised pipeline (encoder bootstrap, hybrid model, integration
-tests) has not yet run inside Jenkins. Every command in it has been run on the
-development machine in pipeline order, including a full promotion, staging,
-image build, deployment, health check and integration tests.
+tests) has not yet run inside Jenkins, which builds from GitHub. Before the
+push it was replayed without Jenkins: stages, `bat` commands, `when`
+conditions and exit codes were parsed from the Jenkinsfile and run through
+`cmd.exe` in a fresh clone, with the SYSTEM account's machine PATH, an empty
+profile, no user site-packages, and all non-local network access from Python
+blocked and logged.
+
+| Replay | Result |
+|---|---|
+| Below threshold, live data | 5 stages pass, 7 skipped; 0 network attempts; live database unchanged |
+| Retraining path, copy of live data + 10 new rows | all 12 stages pass; v5 accepted and deployed; 15 / 15 integration tests; 0 non-local network attempts |
+
+The replay found one defect, since fixed: requirements pinned
+`torch==2.13.0+cpu`, which the Windows host's torch (`2.13.0`) does not
+satisfy, so the first Jenkins build would have re-downloaded torch. The same
+check found that the shared interpreter held a stale `httpcore` that pip
+would have "fixed" by downgrading `h11` for other tools; both versions are now
+pinned to what a clean install resolves.
 
 ### Windows adaptations
 
@@ -1101,6 +1120,7 @@ All figures below were measured during development. Nothing is estimated.
 | Container persistence | **Verified** |
 | Jenkins below-threshold runs | **Verified in Jenkins** — #307–#326, #513–#532 (2 network failures at Checkout) |
 | Jenkins full cycles | **Verified by evidence** — builds #3, #75 |
+| Revised pipeline, Jenkins-like offline replay | **Verified** — both paths pass |
 | **Revised pipeline in Jenkins** | **Pending push** |
 
 ### The evaluator's five cases, re-tested

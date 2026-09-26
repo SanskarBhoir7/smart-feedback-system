@@ -168,9 +168,14 @@ Four separations make the design work:
 | SCM | Git | 2.55.0 |
 
 Versions are pinned in `requirements.txt` so the model artifact trained on the
-host loads correctly inside the container. `requirements.txt` points pip at
-PyTorch's CPU wheel index: the default wheel bundles GPU libraries that this
-project never uses and would add gigabytes to the image.
+host loads correctly inside the container. PyTorch is the CPU-only build on
+both platforms. On Linux (the Docker image) it comes from PyTorch's CPU wheel
+index as `2.13.0+cpu`, because PyPI's Linux wheel bundles GPU libraries that
+would add gigabytes to the image. On Windows (the Jenkins host) PyPI's wheel is
+already CPU-only and is published as plain `2.13.0`, so that is what is
+pinned there — pinning `+cpu` on Windows made pip re-download torch.
+`httpcore` and `h11` are pinned to the versions a clean install resolves, so
+pip does not downgrade `h11` in the shared Jenkins Python.
 
 ## 6. Folder structure
 
@@ -810,10 +815,13 @@ Then create the pipeline job:
 The `Jenkinsfile` declares `triggers { cron('H/5 * * * *') }`, so after the
 first manual build Jenkins runs every five minutes on its own.
 
-**First run after this revision.** Jenkins' *Bootstrap Encoder and Model*
-stage runs `prepare_encoder.py`. If `C:\mlops-data\encoders` is already
-prepared (it is on the development machine) this only checks it; on a fresh
-machine it needs internet access once.
+**First run after this revision.** On this machine *Install Dependencies*
+installs nothing (every pinned package is already in the Python Jenkins
+uses), and *Bootstrap Encoder and Model* only confirms the prepared encoder in
+`C:\mlops-data\encoders`. So a normal build needs no internet beyond Jenkins'
+own `git fetch` — verified by the replay in §18. On a fresh machine, pip and
+`prepare_encoder.py` need internet access once; if the encoder cannot be
+downloaded, `prepare_encoder.py` says so plainly and exits 1.
 
 ## 18. Jenkins pipeline explained
 
@@ -867,11 +875,23 @@ service for no reason.
 * builds #320–#323 ran **after** the database migration and still passed —
   the old pipeline reads the migrated database without problems.
 
-**Not yet verified in Jenkins:** the revised pipeline. Its commands have all
-been run locally, in order, with the exit codes Jenkins relies on — including
-a full promotion (v4), `stage_model.py`, `docker build`, deploy, the health
-check and the 15 integration tests — but Jenkins itself will first run them
-after this revision is pushed.
+**Not yet verified inside Jenkins:** the revised pipeline, because Jenkins
+builds from GitHub. Before pushing, it was replayed as closely as possible
+without Jenkins: the stages, `bat` commands, `when` conditions and exit-code
+handling were **parsed from the Jenkinsfile itself** and run through
+`cmd.exe` in a fresh clone, with the SYSTEM account's machine PATH, an empty
+user profile, no user site-packages, and every non-local network connection
+made by Python blocked and logged.
+
+| Replay | Result |
+|---|---|
+| Below threshold, live data | 5 stages pass, 7 skipped by `when`; **0** network attempts; live database byte-identical before and after |
+| Retraining path, copy of the live data + 10 new rows | **all 12 stages pass** — exit 10 → 5 inconsistent rows excluded → v5 accepted (0.9306) → model + encoder staged → image built → container healthy serving v5 → 15 / 15 integration tests; **0** non-local network attempts |
+
+The replay caught one real problem, now fixed: `torch==2.13.0+cpu` did not
+match the Windows host's torch (`2.13.0`), so the first Jenkins build would
+have re-downloaded torch (see §5). What a replay cannot show is Jenkins itself
+running as SYSTEM; the first build after the push will.
 
 **Windows.** Every step uses `bat`, not `sh`. The practicals show `sh` because
 they assume a Linux agent; this Jenkins runs on Windows, where `sh` fails.
@@ -1218,4 +1238,5 @@ Jenkins job `MLOps-LabExp8`, but that is not firm enough to assert a number.
 | `jenkins_env_check.bat` | **Verified** — 7 / 7 checks pass |
 | Jenkins below-threshold runs | **Verified in Jenkins** — #307–#326 all SUCCESS; #513–#532 18 SUCCESS, 2 Checkout failures (no DNS after wake) |
 | Jenkins full retraining cycle | **Verified by evidence** — v2 / v3 promotions match images v3 / v75 (logs rotated out) |
+| Revised pipeline, Jenkins-like replay | **Verified** — both paths pass offline under SYSTEM-like conditions (§18) |
 | **Revised pipeline inside Jenkins** | **Pending** — runs after the revision is pushed |
