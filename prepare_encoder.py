@@ -74,7 +74,19 @@ def prepare(force=False):
             return 0
         print("  Prepared copy is a different revision - rebuilding.")
 
-    source = _snapshot_path()
+    try:
+        source = _snapshot_path()
+    except Exception as error:                          # noqa: BLE001
+        # Most often: no internet. Say so plainly in the build log instead of
+        # ending on an HTTP library's traceback.
+        print("")
+        print("  FAILED - the encoder is not prepared in this store, and it")
+        print("  could not be downloaded:")
+        print("    {}: {}".format(type(error).__name__, str(error)[:200]))
+        print("  Run 'python prepare_encoder.py' once with internet access.")
+        print("  After that, no step needs the network.")
+        print("=" * 58)
+        return 1
 
     if os.path.exists(target):
         shutil.rmtree(target)
