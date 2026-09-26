@@ -125,10 +125,13 @@ def print_detailed_report(y_true, y_predicted):
 
 
 def save_metrics(metrics, path):
-    """Write metrics to JSON so the next Jenkins stage can read them."""
+    """
+    Write metrics to JSON so the next Jenkins stage can read them, stamped
+    with the build that wrote them (see config.build_provenance).
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(metrics, handle, indent=2)
+        json.dump(dict(metrics, provenance=config.build_provenance()), handle, indent=2)
     print("\nMetrics written to: {}".format(path))
 
 

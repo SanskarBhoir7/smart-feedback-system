@@ -80,6 +80,27 @@ HOLDOUT_CSV = os.path.join(BASE_DIR, "data", "holdout.csv")
 CANDIDATE_MODEL_FILE = os.path.join(BUILD_DIR, "candidate_model.pkl")
 CANDIDATE_METRICS_FILE = os.path.join(BUILD_DIR, "candidate_metrics.json")
 RETRAIN_DECISION_FILE = os.path.join(BUILD_DIR, "retrain_decision.json")
+GATE_RESULT_FILE = os.path.join(BUILD_DIR, "gate_result.json")
+
+
+def build_provenance():
+    """
+    Where a pipeline artifact came from, written into every JSON file in
+    BUILD_DIR.
+
+    Jenkins archives these files per build, and BUILD_DIR survives between
+    builds in the Jenkins workspace, so each file names the build that wrote
+    it. Jenkins sets BUILD_TAG and BUILD_NUMBER for every step (and GIT_COMMIT
+    after its checkout); run by hand, they are None.
+    """
+    from datetime import datetime
+
+    return {
+        "jenkins_build": os.environ.get("BUILD_TAG") or None,
+        "build_number": os.environ.get("BUILD_NUMBER") or None,
+        "git_commit": os.environ.get("GIT_COMMIT") or None,
+        "written_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -277,11 +277,22 @@ pipeline {
     // -----------------------------------------------------------------------
     post {
         always {
-            // Keep the evidence from every build: the retraining decision,
-            // the candidate's metrics and its training summary - including
-            // which feedback rows were excluded as inconsistent.
-            archiveArtifacts artifacts: 'build/*.json',
-                             allowEmptyArchive: true, fingerprint: true
+            // Archive only what THIS build produced. build/ is gitignored, so
+            // it survives checkout; retrain.py --check clears the previous
+            // run's candidate files, and each file records the build that
+            // wrote it. The decision exists once the check has run; the
+            // candidate's training summary, metrics and gate result only in
+            // a build that actually retrained.
+            script {
+                if (env.RETRAIN_REQUIRED != null) {
+                    archiveArtifacts artifacts: 'build/retrain_decision.json',
+                                     allowEmptyArchive: true, fingerprint: true
+                }
+                if (env.RETRAIN_REQUIRED == 'true') {
+                    archiveArtifacts artifacts: 'build/candidate_*.json, build/gate_result.json',
+                                     allowEmptyArchive: true, fingerprint: true
+                }
+            }
         }
         success {
             script {

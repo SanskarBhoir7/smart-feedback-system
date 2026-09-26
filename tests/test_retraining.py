@@ -375,3 +375,88 @@ def test_recovery_after_a_rejection(production_model, monkeypatch):
     _, _, gate_code = run_full_retrain_cycle()
     assert gate_code == retrain.EXIT_OK
     assert database.get_production_model()["version"] == 3
+
+
+# ---------------------------------------------------------------------------
+# ARTIFACT TRACEABILITY
+# ---------------------------------------------------------------------------
+
+BUILD_ARTIFACTS = (config.RETRAIN_DECISION_FILE,
+                   config.CANDIDATE_METRICS_FILE.replace("metrics", "training"),
+                   config.CANDIDATE_METRICS_FILE,
+                   config.GATE_RESULT_FILE)
+
+
+def _pretend_jenkins_build(monkeypatch, number):
+    monkeypatch.setenv("BUILD_NUMBER", str(number))
+    monkeypatch.setenv("BUILD_TAG", "jenkins-Smart-Feedback-CI-CD-{}".format(number))
+    monkeypatch.setenv("GIT_COMMIT", "0123abc")
+
+
+def test_check_clears_candidate_files_left_by_an_earlier_run(production_model, monkeypatch):
+    """
+    build/ survives between Jenkins builds. A build that does not retrain
+    must not be left holding an earlier build's candidate - it would be
+    archived as this build's, and the gate could pick it up.
+    """
+    for name in ("BUILD_NUMBER", "BUILD_TAG", "GIT_COMMIT"):
+        monkeypatch.delenv(name, raising=False)       # a manual run
+    stale = (config.CANDIDATE_MODEL_FILE,) + BUILD_ARTIFACTS[1:]
+    os.makedirs(config.BUILD_DIR, exist_ok=True)
+    for path in stale:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"from": "an earlier build"}')
+
+    assert retrain.check() == retrain.EXIT_OK            # below the threshold
+
+    assert not any(os.path.exists(path) for path in stale)
+    decision = retrain.read_json(config.RETRAIN_DECISION_FILE)
+    assert decision["retrain_required"] is False
+    assert decision["provenance"]["jenkins_build"] is None
+
+    # Nothing left for the gate to promote by mistake.
+    assert retrain.quality_gate() == retrain.EXIT_OK
+    assert database.get_production_model()["version"] == production_model["version"]
+
+
+def test_every_artifact_names_the_build_that_wrote_it(production_model, monkeypatch):
+    """
+    Each JSON a retraining build leaves in build/ records its build, and the
+    gate result and the version's notes link that build to the model version.
+    """
+    _pretend_jenkins_build(monkeypatch, 777)
+    add_feedback(config.RETRAIN_THRESHOLD,
+                 text="excellent service and very helpful staff", rating=5)
+    _, _, gate_code = run_full_retrain_cycle()
+    assert gate_code == retrain.EXIT_OK
+
+    for path in BUILD_ARTIFACTS:
+        provenance = retrain.read_json(path)["provenance"]
+        assert provenance["build_number"] == "777", path
+        assert provenance["jenkins_build"] == "jenkins-Smart-Feedback-CI-CD-777", path
+        assert provenance["git_commit"] == "0123abc", path
+
+    result = retrain.read_json(config.GATE_RESULT_FILE)
+    production = database.get_production_model()
+    assert result["decision"] == "accepted"
+    assert result["model_version"] == production["version"] == 2
+    assert result["model_file"] == "model_v2.pkl"
+    assert result["production_before"]["version"] == production_model["version"]
+    assert "Jenkins build jenkins-Smart-Feedback-CI-CD-777" in production["notes"]
+
+
+def test_a_rejection_is_recorded_in_the_gate_result(production_model, monkeypatch):
+    """A rejected build's artifacts say so, and name the rejected version."""
+    _pretend_jenkins_build(monkeypatch, 778)
+    monkeypatch.setattr(config, "MIN_ACCURACY", 0.999)
+    add_feedback(config.RETRAIN_THRESHOLD,
+                 text="excellent service and very helpful staff", rating=5)
+    _, _, gate_code = run_full_retrain_cycle()
+    assert gate_code == retrain.EXIT_ERROR
+
+    result = retrain.read_json(config.GATE_RESULT_FILE)
+    assert result["decision"] == "rejected"
+    assert result["model_version"] == 2
+    assert "below the required" in result["reason"]
+    assert result["provenance"]["build_number"] == "778"
+    assert database.get_production_model()["version"] == production_model["version"]

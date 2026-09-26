@@ -85,6 +85,31 @@ def read_json(path):
         return json.load(handle)
 
 
+def clear_previous_run():
+    """
+    Delete the candidate files an EARLIER run left in BUILD_DIR.
+
+    BUILD_DIR is gitignored, so in the Jenkins workspace it survives from one
+    build to the next. Without this, a build that did not retrain archived a
+    days-old candidate as if it were its own. --check starts every pipeline
+    run, so it clears them before anything else. Returns the paths removed.
+    """
+    stale = (config.CANDIDATE_MODEL_FILE,
+             config.CANDIDATE_METRICS_FILE,
+             config.CANDIDATE_METRICS_FILE.replace("metrics", "training"),
+             config.GATE_RESULT_FILE)
+    removed = [path for path in stale if os.path.exists(path)]
+    for path in removed:
+        os.remove(path)
+    return removed
+
+
+def _build_note():
+    """Name the Jenkins build in a version's notes, so the history leads back to it."""
+    build = config.build_provenance()["jenkins_build"]
+    return "; Jenkins build {}".format(build) if build else ""
+
+
 def banner(title):
     """Print a clearly delimited section header for the Jenkins console log."""
     print("")
@@ -105,6 +130,7 @@ def check(quiet=False):
     training run against RETRAIN_THRESHOLD.
     """
     database.init_db()
+    removed = clear_previous_run()
     new_samples = database.count_new_samples()
     required = new_samples >= config.RETRAIN_THRESHOLD
 
@@ -112,6 +138,7 @@ def check(quiet=False):
         "new_samples": new_samples,
         "threshold": config.RETRAIN_THRESHOLD,
         "retrain_required": required,
+        "provenance": config.build_provenance(),
     }
     write_json(config.RETRAIN_DECISION_FILE, decision)
 
@@ -121,6 +148,8 @@ def check(quiet=False):
         return EXIT_RETRAIN_REQUIRED if required else EXIT_OK
 
     banner("CHECK RETRAINING REQUIREMENT")
+    if removed:
+        print("  Cleared {} candidate file(s) left by an earlier run".format(len(removed)))
     print("  New samples          : {}".format(new_samples))
     print("  Retraining threshold : {}".format(config.RETRAIN_THRESHOLD))
     print("")
@@ -196,6 +225,7 @@ def train_candidate(force=False):
         "excluded_reasons": summary["excluded_reasons"],
         "quality_flags": summary["quality_flags"],
         "new_samples": new_samples,
+        "provenance": config.build_provenance(),
     })
 
     print("")
@@ -216,6 +246,27 @@ def _exclusion_note(training_info):
         return ""
     return "; excluded {} inconsistent feedback row(s): ids {}".format(
         len(excluded), ", ".join(str(i) for i in excluded))
+
+
+def _write_gate_result(decision, version, candidate_accuracy, production, current,
+                       reason, training_info):
+    """
+    Record the gate's outcome - and the model version it produced - in
+    BUILD_DIR, so the archived artifacts of a build say which version they
+    became and the version's notes say which build made it.
+    """
+    write_json(config.GATE_RESULT_FILE, {
+        "decision": decision,
+        "model_version": version,
+        "model_file": config.model_filename(version),
+        "candidate_accuracy": candidate_accuracy,
+        "required_accuracy": config.MIN_ACCURACY,
+        "production_before": {"version": production["version"],
+                              "accuracy_rescored": current} if production else None,
+        "reason": reason,
+        "excluded_ids": training_info.get("excluded_ids", []),
+        "provenance": config.build_provenance(),
+    })
 
 
 def _load_candidate_metrics():
@@ -349,9 +400,11 @@ def quality_gate():
             metrics=candidate_metrics,
             training_samples=training_info.get("training_samples", 0),
             status=config.STATUS_REJECTED,
-            notes="Rejected by quality gate: {}{}".format(
-                reason_text, _exclusion_note(training_info)),
+            notes="Rejected by quality gate: {}{}{}".format(
+                reason_text, _exclusion_note(training_info), _build_note()),
         )
+        _write_gate_result("rejected", version, candidate_accuracy, production,
+                           current, reason_text, training_info)
 
         print("  Candidate recorded as v{} with status 'rejected'.".format(version))
         if production:
@@ -377,10 +430,12 @@ def quality_gate():
         metrics=candidate_metrics,
         training_samples=training_info.get("training_samples", 0),
         status=config.STATUS_PRODUCTION,
-        notes="Accepted by quality gate (accuracy {:.4f}){}".format(
-            candidate_accuracy, _exclusion_note(training_info)),
+        notes="Accepted by quality gate (accuracy {:.4f}){}{}".format(
+            candidate_accuracy, _exclusion_note(training_info), _build_note()),
     )
     database.promote_to_production(version)
+    _write_gate_result("accepted", version, candidate_accuracy, production,
+                       current, None, training_info)
 
     # Only now are the samples consumed. A rejection never eats training data.
     # Rows excluded as inconsistent are marked too: they were reviewed by an

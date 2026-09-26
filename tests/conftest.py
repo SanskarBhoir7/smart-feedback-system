@@ -68,6 +68,7 @@ config.MODEL_SEARCH_PATH = [config.STAGED_MODEL_DIR, config.MODEL_STORE]
 config.CANDIDATE_MODEL_FILE = os.path.join(config.BUILD_DIR, "candidate_model.pkl")
 config.CANDIDATE_METRICS_FILE = os.path.join(config.BUILD_DIR, "candidate_metrics.json")
 config.RETRAIN_DECISION_FILE = os.path.join(config.BUILD_DIR, "retrain_decision.json")
+config.GATE_RESULT_FILE = os.path.join(config.BUILD_DIR, "gate_result.json")
 
 # The encoder is READ from its real locations - the workspace copy baked into
 # a Docker image, then the persistent store - but anything that would stage a
