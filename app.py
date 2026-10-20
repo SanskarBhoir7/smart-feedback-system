@@ -325,6 +325,8 @@ def predict_api():
 
     return jsonify({
         "prediction": detail["sentiment"],
+        "outcome": detail["outcome"],
+        "abstained": detail["abstained"],
         "model_version": detail["model_version"],
         "confidence": detail["confidence"],
         "low_confidence": detail["low_confidence"],

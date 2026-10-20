@@ -130,17 +130,20 @@ def predict_detailed(text):
         confidence       the top class probability, 0-1
         probabilities    {"negative": p, "neutral": p, "positive": p}
         low_confidence   True when confidence < config.LOW_CONFIDENCE_THRESHOLD
+        outcome          the prediction, or "uncertain" below the threshold
+        abstained        whether the user-facing outcome abstains
 
-    low_confidence is ADVISORY. The prediction is still made and returned; the
-    flag only says the model had limited evidence. On this dataset that covers
-    both near-meaningless input ("something something") and genuine but
-    unfamiliar wording ("I feel cheated") - the model cannot tell them apart.
+    sentiment preserves the classifier's best guess for diagnostics and
+    compatibility. outcome is "uncertain" below the calibrated confidence
+    threshold, and abstained makes that user-facing decision explicit. A low
+    probability is a warning signal, not proof that a prediction is wrong.
 
     With no model available every field is None, and feedback is still stored
     so it can be used for training later.
     """
     empty = {"sentiment": None, "model_version": None, "confidence": None,
-             "probabilities": None, "low_confidence": None}
+             "probabilities": None, "low_confidence": None,
+             "outcome": None, "abstained": None}
 
     model, version = get_model()
     if model is None:
@@ -156,12 +159,15 @@ def predict_detailed(text):
     sentiment = max(probabilities, key=probabilities.get)
     confidence = probabilities[sentiment]
 
+    low_confidence = confidence < config.LOW_CONFIDENCE_THRESHOLD
     return {
         "sentiment": sentiment,
         "model_version": version,
         "confidence": confidence,
         "probabilities": probabilities,
-        "low_confidence": confidence < config.LOW_CONFIDENCE_THRESHOLD,
+        "low_confidence": low_confidence,
+        "outcome": "uncertain" if low_confidence else sentiment,
+        "abstained": low_confidence,
     }
 
 
