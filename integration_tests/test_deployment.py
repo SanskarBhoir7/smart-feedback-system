@@ -71,9 +71,15 @@ def test_deployed_model_handles_unseen_wording(api):
     assert payload["prediction"] == "positive"
 
 
-def test_low_information_input_is_flagged(api):
+def test_low_information_input_obeys_confidence_and_abstention_contract(api):
     payload = api("POST", "/predict", json_body={"text": "something something"}).json()
-    assert payload["low_confidence"] is True
+    threshold = api("GET", "/api/stats").json()["low_confidence_threshold"]
+    expected_abstention = payload["confidence"] < threshold
+
+    assert payload["low_confidence"] is expected_abstention
+    assert payload["abstained"] is expected_abstention
+    assert payload["outcome"] == (
+        "uncertain" if expected_abstention else payload["prediction"])
 
 
 def test_predict_rejects_invalid_input(api):

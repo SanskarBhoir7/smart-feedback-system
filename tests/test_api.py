@@ -99,7 +99,24 @@ def test_predict_returns_a_prediction(client_with_model):
 
     payload = response.get_json()
     assert payload["prediction"] == config.POSITIVE
+    assert payload["outcome"] == config.POSITIVE
+    assert payload["abstained"] is False
+    assert payload["low_confidence"] is False
+    assert payload["confidence"] >= config.LOW_CONFIDENCE_THRESHOLD
     assert payload["model_version"] == 1
+
+
+def test_predict_marks_low_confidence_as_uncertain(client_with_model):
+    response = client_with_model.post(
+        "/predict", json={"text": "something something"})
+    assert response.status_code == 200
+
+    payload = response.get_json()
+    assert payload["prediction"] in config.SENTIMENT_CLASSES
+    assert payload["confidence"] < config.LOW_CONFIDENCE_THRESHOLD
+    assert payload["low_confidence"] is True
+    assert payload["outcome"] == "uncertain"
+    assert payload["abstained"] is True
 
 
 def test_predict_accepts_form_encoded_input(client_with_model):
